@@ -104,6 +104,7 @@
         </div>
     </div>
 
+    <!-- Мобильная кнопка биты справа -->
     <div id="mobileControls" class="hidden fixed bottom-6 right-6 z-20 flex flex-col gap-3 items-end pointer-events-auto">
         <button id="mobileBatBtn" onclick="game.swingBat()"
             class="hidden w-14 h-14 rounded-full bg-red-600/90 text-white font-black text-xl shadow-lg border-2 border-red-300 flex items-center justify-center active:scale-95">
@@ -113,15 +114,15 @@
 
     <div id="toastContainer" class="fixed top-24 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-none w-full max-w-md px-4"></div>
 
-    <!-- Модальное окно игровых автоматов / рынка -->
+    <!-- Модальное окно талисманов -->
     <div id="machineModal" class="hidden fixed inset-0 z-30 bg-black/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 pointer-events-auto">
         <div class="bg-zinc-900 border-2 border-zinc-700 rounded-2xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
             <div class="flex items-center justify-between px-4 py-3 bg-zinc-950 border-b border-zinc-800">
                 <div class="flex items-center gap-2.5">
-                    <span id="modalIcon" class="text-2xl">🎰</span>
+                    <span id="modalIcon" class="text-2xl">🕵️‍♂️</span>
                     <div>
-                        <h2 id="modalTitle" class="font-black text-base sm:text-lg text-amber-400 leading-tight">Автомат</h2>
-                        <p id="modalSubtitle" class="text-xs text-zinc-400">Игровой терминал</p>
+                        <h2 id="modalTitle" class="font-black text-base sm:text-lg text-amber-400 leading-tight">Ростовщик</h2>
+                        <p id="modalSubtitle" class="text-xs text-zinc-400">Чёрный рынок талисманов</p>
                     </div>
                 </div>
                 <div class="flex items-center gap-3">
@@ -155,7 +156,7 @@
                 ДОЛГ И <span class="text-amber-400">КАЗИНО 3D</span>
             </h1>
             <p id="txtMenuDesc" class="text-zinc-300 text-xs sm:text-sm leading-relaxed mb-4">
-                Зайдите в лифт и выберите этаж! Сыграйте в <b>«Пингвинчики»</b>: выбирайте шаги по льдинкам, умножайте до x50 или забирайте выигрыш вовремя, пока льдинка не треснула. Бейте битой на <b>[F]</b>.
+                Зайдите в отдельную <b>комнату лифта</b> внутри казино и нажмите квадратные кнопки на стене, чтобы выбрать этаж! Ударяйте битой на <b>[F]</b>.
             </p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 text-left">
                 <div>
@@ -204,7 +205,7 @@ async function initMultiplayer() {
         console.warn('Multiplayer offline fallback:', e);
     }
 }
-initMultiplayer();
+const multiplayerReady = initMultiplayer();
 
 window.mpSync = {
     roomCode: 'CASINO777',
@@ -235,25 +236,31 @@ window.mpSync = {
         } catch (_) {}
 
         this.initPeerJS();
-        if (!db) return;
+        this.connectFirestore(this.roomCode);
+    },
 
-        if (this.unsubscribePlayers) this.unsubscribePlayers();
-        const playersRef = collection(db, 'artifacts', appId, 'public', 'data', `room_${this.roomCode}_players`);
-
-        this.unsubscribePlayers = onSnapshot(playersRef, (snapshot) => {
-            const remoteData = {};
-            let count = 0;
-            snapshot.forEach((docSnap) => {
-                const data = docSnap.data();
-                if (Date.now() - (data.updatedAt || 0) < 15000) {
-                    count++;
-                    if (docSnap.id !== myUid) remoteData[docSnap.id] = data;
-                }
-            });
-            const onlineEl = document.getElementById('hudOnlineCount');
-            if (onlineEl) onlineEl.textContent = `${Math.max(1, count)} игрок(а)`;
-            if (window.game) window.game.syncRemotePlayers(remoteData);
-        }, () => {});
+    connectFirestore(expectedRoom) {
+        const attach = () => {
+            if (!db || expectedRoom !== this.roomCode) return;
+            if (this.unsubscribePlayers) this.unsubscribePlayers();
+            const playersRef = collection(db, 'artifacts', appId, 'public', 'data', `room_${expectedRoom}_players`);
+            this.unsubscribePlayers = onSnapshot(playersRef, (snapshot) => {
+                const remoteData = {};
+                let count = 0;
+                snapshot.forEach((docSnap) => {
+                    const data = docSnap.data();
+                    if (Date.now() - (data.updatedAt || 0) < 15000) {
+                        count++;
+                        if (docSnap.id !== myUid) remoteData[docSnap.id] = data;
+                    }
+                });
+                const onlineEl = document.getElementById('hudOnlineCount');
+                if (onlineEl) onlineEl.textContent = `${Math.max(1, count)} ${window.game && window.game.lang === 'en' ? 'players' : 'игрок(а)'}`;
+                if (window.game) window.game.syncRemotePlayers(remoteData);
+            }, () => {});
+        };
+        if (db) attach();
+        else if (multiplayerReady && typeof multiplayerReady.then === 'function') multiplayerReady.then(attach).catch(() => {});
     },
 
     initPeerJS() {
@@ -340,6 +347,16 @@ window.mpSync = {
 </script>
 
 <script>
+if (typeof CanvasRenderingContext2D !== 'undefined' && !CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r = 0) {
+        const radius = Math.max(0, Math.min(Number(r) || 0, Math.abs(w) / 2, Math.abs(h) / 2));
+        this.moveTo(x + radius, y); this.lineTo(x + w - radius, y); this.quadraticCurveTo(x + w, y, x + w, y + radius);
+        this.lineTo(x + w, y + h - radius); this.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+        this.lineTo(x + radius, y + h); this.quadraticCurveTo(x, y + h, x, y + h - radius);
+        this.lineTo(x, y + radius); this.quadraticCurveTo(x, y, x + radius, y); return this;
+    };
+}
+
 const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 if (isTouchDevice) {
     const jArea = document.getElementById('mobileJoystickArea');
@@ -351,12 +368,12 @@ if (isTouchDevice) {
 const LOCALES = {
     ru: {
         shift: 'Смена', floor: 'Этаж', online: 'Онлайн', balance: 'Баланс', target: 'Цель ночи', timer: 'До рассвета',
-        submit: 'Сдать долю 🔒', submitOk: 'Сдать долю ✓', menuDesc: 'Зайдите в лифт и выберите этаж! Сыграйте в <b>«Пингвинчики»</b>: выбирайте шаги по льдинкам, умножайте до x50 или забирайте выигрыш вовремя. Бейте битой на <b>[F]</b>.',
+        submit: 'Сдать долю 🔒', submitOk: 'Сдать долю ✓', menuDesc: 'Зайдите в отдельную комнату лифта внутри казино и нажмите квадратные кнопки на стене, чтобы выбрать этаж!',
         nameLbl: 'Позывной:', roomLbl: 'Код комнаты:', startBtn: 'Войти в 3D казино'
     },
     en: {
         shift: 'Shift', floor: 'Floor', online: 'Online', balance: 'Balance', target: 'Night Target', timer: 'Till Dawn',
-        submit: 'Submit Quota 🔒', submitOk: 'Submit Quota ✓', menuDesc: 'Enter the elevator and pick your floor! Play <b>Penguins</b>: step across ice floes, multiply up to x50 or cash out before the ice cracks!',
+        submit: 'Submit Quota 🔒', submitOk: 'Submit Quota ✓', menuDesc: 'Enter the separate elevator room inside the casino and press the square wall buttons to select your floor!',
         nameLbl: 'Player Name:', roomLbl: 'Room Code:', startBtn: 'Enter 3D Casino'
     }
 };
@@ -376,17 +393,15 @@ const TALISMANS = [
 ];
 
 const ALL_GAMES_POOL = [
-    { type: 'plinko', color: '#38bdf8', hexColor: 0x38bdf8, icon: '🐧', name: 'Пингвинчики (Шаги)' },
     { type: 'slots', color: '#f59e0b', hexColor: 0xf59e0b, icon: '🎰', name: 'Однорукий Бандит' },
+    { type: 'plinko', color: '#38bdf8', hexColor: 0x38bdf8, icon: '🐧', name: 'Пингвинчики (Plinko)' },
+    { type: 'dice', color: '#8b5cf6', hexColor: 0x8b5cf6, icon: '🎲', name: 'Кости (Hi-Lo 7)' },
     { type: 'blackjack', color: '#14b8a6', hexColor: 0x14b8a6, icon: '♠️', name: 'Блэкджек 21' },
     { type: 'ducks', color: '#facc15', hexColor: 0xfacc15, icon: '🦆', name: 'Гонка уток' },
     { type: 'roulette', color: '#ef4444', hexColor: 0xef4444, icon: '🎡', name: '3D Рулетка' },
     { type: 'crash', color: '#f97316', hexColor: 0xf97316, icon: '🚀', name: 'Анимированная Ракета' },
-    { type: 'wheel', color: '#eab308', hexColor: 0xeab308, icon: '🎯', name: '3D Колесо Фортуны' },
-    { type: 'hilo', color: '#ec4899', hexColor: 0xec4899, icon: '🃏', name: 'Карта Судьбы' }
+    { type: 'wheel', color: '#eab308', hexColor: 0xeab308, icon: '🎯', name: '3D Колесо Фортуны' }
 ];
-
-const NIGHT_TARGETS = [1200, 2000, 3500, 6000, 10000, 17500, 30000, 50000, 85000, 150000];
 
 class SoundEngine {
     constructor() { this.ctx = null; this.muted = false; }
@@ -425,6 +440,7 @@ class SoundEngine {
     penguinBounce() { this.playTone(620 + Math.random() * 280, 'sine', 0.05, 0.06); }
     batSwing() { this.playTone(180, 'sine', 0.14, 0.14); }
     batHit() { this.playTone(140, 'square', 0.16, 0.22); }
+    duckQuack() { this.playTone(400, 'sawtooth', 0.12, 0.1); }
 }
 const sound = new SoundEngine();
 
@@ -591,18 +607,36 @@ class Casino3DGame {
     initThree() {
         const container = document.getElementById('threeContainer');
         this.scene = new THREE.Scene();
-        this.scene.fog = new THREE.FogExp2(0x09090b, 0.032);
+        this.scene.fog = new THREE.FogExp2(0x09090b, 0.025);
 
         this.camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.1, 60);
         this.camera.rotation.order = 'YXZ';
 
         this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.outputEncoding = THREE.sRGBEncoding;
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        this.renderer.toneMappingExposure = 1.12;
         container.appendChild(this.renderer.domElement);
 
-        this.scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-        this.mainLight = new THREE.PointLight(0xfbbf24, 1.4, 30);
+        this.scene.add(new THREE.HemisphereLight(0xb8c9ff, 0x24152f, 0.52));
+        this.scene.add(new THREE.AmbientLight(0xffffff, 0.42));
+        this.keyLight = new THREE.DirectionalLight(0xffdfae, 0.78);
+        this.keyLight.position.set(-6, 10, 7);
+        this.keyLight.castShadow = true;
+        this.keyLight.shadow.mapSize.set(1024, 1024);
+        this.keyLight.shadow.camera.left = -15;
+        this.keyLight.shadow.camera.right = 15;
+        this.keyLight.shadow.camera.top = 12;
+        this.keyLight.shadow.camera.bottom = -12;
+        this.keyLight.shadow.camera.near = 0.5;
+        this.keyLight.shadow.camera.far = 28;
+        this.keyLight.shadow.bias = -0.00025;
+        this.scene.add(this.keyLight);
+        this.mainLight = new THREE.PointLight(0xfbbf24, 1.25, 30);
         this.mainLight.position.set(0, 4.5, 0);
         this.scene.add(this.mainLight);
 
@@ -668,6 +702,7 @@ class Casino3DGame {
         const sideMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.5 });
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, w, 0.08), [sideMat, sideMat, sideMat, sideMat, topMat, sideMat]);
         mesh.userData.is3DButton = true;
+        mesh.userData.elevatorFloor = Number(label);
         mesh.userData.onClick = () => {
             mesh.position.z -= 0.02;
             setTimeout(() => { mesh.position.z += 0.02; }, 100);
@@ -685,6 +720,7 @@ class Casino3DGame {
         ctx.font = 'bold 54px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#ffffff'; ctx.fillText(icon, 256, 72);
         ctx.font = '900 32px Inter, sans-serif'; ctx.fillStyle = '#fef08a'; ctx.fillText(title, 256, 124);
         const tex = new THREE.CanvasTexture(c);
+        tex.encoding = THREE.sRGBEncoding;
         return new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
     }
 
@@ -761,8 +797,21 @@ class Casino3DGame {
     }
 
     buildFloor3D(floorNum) {
-        while (this.floorGroup.children.length > 0) this.floorGroup.remove(this.floorGroup.children[0]);
-        this.sceneObjects = []; this.npcs = []; this.batPickupMesh = null;
+        while (this.floorGroup.children.length > 0) {
+            const oldChild = this.floorGroup.children[0];
+            this.floorGroup.remove(oldChild);
+            oldChild.traverse((node) => {
+                if (node.geometry && node.geometry.dispose) node.geometry.dispose();
+                if (node.material) {
+                    const materials = Array.isArray(node.material) ? node.material : [node.material];
+                    materials.forEach((mat) => {
+                        if (mat.map && mat.map.dispose) mat.map.dispose();
+                        if (mat.dispose) mat.dispose();
+                    });
+                }
+            });
+        }
+        this.sceneObjects = []; this.npcs = []; this.batPickupMesh = null; this.dealerRig = null;
         this.allInteractiveButtons = [];
 
         const cfg = FLOOR_CONFIG[floorNum];
@@ -773,10 +822,12 @@ class Casino3DGame {
         fctx.fillStyle = '#' + cfg.carpetHex.toString(16).padStart(6, '0'); fctx.fillRect(0, 0, 256, 256);
         fctx.strokeStyle = 'rgba(255,255,255,0.06)'; fctx.lineWidth = 4; fctx.strokeRect(16, 16, 224, 224);
         const floorTex = new THREE.CanvasTexture(floorCanvas);
+        floorTex.encoding = THREE.sRGBEncoding;
         floorTex.wrapS = THREE.RepeatWrapping; floorTex.wrapT = THREE.RepeatWrapping; floorTex.repeat.set(10, 8);
 
         const floorMesh = new THREE.Mesh(new THREE.PlaneGeometry(24, 20), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85 }));
         floorMesh.rotation.x = -Math.PI / 2;
+        floorMesh.receiveShadow = true;
         this.floorGroup.add(floorMesh);
 
         const ceilMesh = new THREE.Mesh(new THREE.PlaneGeometry(24, 20), new THREE.MeshStandardMaterial({ color: 0x09090b, roughness: 0.9 }));
@@ -791,32 +842,37 @@ class Casino3DGame {
         ];
         walls.forEach(wl => {
             const m = new THREE.Mesh(new THREE.PlaneGeometry(wl.w, wl.h), wallMat);
-            m.position.set(wl.x, wl.h / 2, wl.z); m.rotation.y = wl.ry;
+            m.position.set(wl.x, wl.h / 2, wl.z); m.rotation.y = wl.ry; m.receiveShadow = true;
             this.floorGroup.add(m);
             const strip = new THREE.Mesh(new THREE.BoxGeometry(wl.w, 0.12, 0.12), neonMat);
             strip.position.set(wl.x, 4.4, wl.z); strip.rotation.y = wl.ry;
             this.floorGroup.add(strip);
         });
 
+        addCasinoAtmosphere(this, floorNum);
+
         const defs = this.getFloorObjects(floorNum);
         defs.forEach(def => {
             const group = new THREE.Group();
             group.position.set(def.x, 0, def.z); group.rotation.y = def.ry || 0;
-            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.4, metalness: 0.4 });
-            const accentMat = new THREE.MeshBasicMaterial({ color: def.hexColor });
+            const bodyMat = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.35, metalness: 0.5 });
+            const accentMat = new THREE.MeshStandardMaterial({ color: def.hexColor, emissive: def.hexColor, emissiveIntensity: 0.32, metalness: 0.55, roughness: 0.28 });
+            const goldMat = new THREE.MeshStandardMaterial({ color: 0xd6ad55, metalness: 0.82, roughness: 0.24, emissive: 0x4a2c08, emissiveIntensity: 0.12 });
 
             if (def.type === 'elevator') {
                 const roomGroup = new THREE.Group();
-                const liftFloor = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.6), new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.5 }));
-                liftFloor.rotation.x = -Math.PI / 2;
+                const liftFloor = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.6), new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.4, metalness: 0.3 }));
+                liftFloor.rotation.x = -Math.PI / 2; liftFloor.receiveShadow = true;
                 const liftRoof = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.6), new THREE.MeshStandardMaterial({ color: 0x030712 }));
                 liftRoof.rotation.x = Math.PI / 2; liftRoof.position.y = 3.0;
 
-                const lWallMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.6 });
+                const lWallMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.5, metalness: 0.3 });
                 const backWall = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.0), lWallMat); backWall.position.set(0, 1.5, -1.8);
                 const leftWall = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.0), lWallMat); leftWall.position.set(-1.8, 1.5, 0); leftWall.rotation.y = Math.PI / 2;
                 const rightWall = new THREE.Mesh(new THREE.PlaneGeometry(3.6, 3.0), lWallMat); rightWall.position.set(1.8, 1.5, 0); rightWall.rotation.y = -Math.PI / 2;
-                roomGroup.add(liftFloor, liftRoof, backWall, leftWall, rightWall);
+                const liftLight = new THREE.PointLight(0x60a5fa, 0.85, 6);
+                liftLight.position.set(0, 2.6, 0);
+                roomGroup.add(liftFloor, liftRoof, backWall, leftWall, rightWall, liftLight);
 
                 for (let f = 1; f <= 3; f++) {
                     const unlocked = f <= this.unlockedFloors;
@@ -832,29 +888,31 @@ class Casino3DGame {
                 group.add(roomGroup);
 
             } else if (def.type === 'dealer') {
-                const desk = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.1, 1.0), bodyMat); desk.position.y = 0.55;
+                const desk = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.1, 1.0), bodyMat); desk.position.y = 0.55; desk.castShadow = true; desk.receiveShadow = true;
+                const deskGold = new THREE.Mesh(new THREE.BoxGeometry(2.46, 0.08, 1.06), goldMat); deskGold.position.y = 1.1;
                 const dealerChar = this.createGoofyCharacterMesh(0x064e3b, 0xa3b18a, 0xd97706);
                 dealerChar.root.position.set(0, 0.45, -0.35);
-                group.add(desk, dealerChar.root);
+                this.dealerRig = dealerChar;
+                group.add(desk, deskGold, dealerChar.root);
 
                 const shopBtn = this.create3DButton('ТАЛИСМАНЫ 🕵️‍♂️', '#10b981', '#09090b', 1.4, 0.3, () => {
                     input.unlockPointer(); this.openObjectModal(def);
                 });
-                shopBtn.position.set(0, 1.15, 0.55); group.add(shopBtn);
+                shopBtn.position.set(0, 1.18, 0.55); group.add(shopBtn);
                 this.allInteractiveButtons.push(shopBtn);
             } else {
                 const deck = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.22, 0.62), new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.45 }));
-                deck.position.set(0, 1.02, 0.72); deck.rotation.x = 0.22;
+                deck.position.set(0, 1.02, 0.72); deck.rotation.x = 0.22; deck.castShadow = true;
 
-                const cabinet = new THREE.Mesh(new THREE.BoxGeometry(1.75, 2.25, 1.25), bodyMat); cabinet.position.y = 1.125;
+                const cabinet = new THREE.Mesh(new THREE.BoxGeometry(1.75, 2.25, 1.25), bodyMat); cabinet.position.y = 1.125; cabinet.castShadow = true; cabinet.receiveShadow = true;
                 const trim = new THREE.Mesh(new THREE.BoxGeometry(1.82, 0.14, 1.32), accentMat); trim.position.y = 2.26;
                 group.add(cabinet, trim, deck);
 
                 const standGroup = new THREE.Group();
                 standGroup.position.set(1.38, 0, 0.35);
-                const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.1, 12), bodyMat); pole.position.y = 0.55;
+                const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.1, 12), bodyMat); pole.position.y = 0.55; pole.castShadow = true;
                 const terminalDesk = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.18, 0.65), new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.4 }));
-                terminalDesk.position.set(0, 1.02, 0); terminalDesk.rotation.x = 0.35;
+                terminalDesk.position.set(0, 1.02, 0); terminalDesk.rotation.x = 0.35; terminalDesk.castShadow = true;
                 standGroup.add(pole, terminalDesk);
                 group.add(standGroup);
 
@@ -862,11 +920,10 @@ class Casino3DGame {
             }
 
             const sign = this.createSignSprite(def.icon, def.name, def.color);
-            sign.position.set(0, 3.15, 0); group.add(sign);
+            sign.position.set(0, def.type === 'wheel' ? 3.55 : 3.15, 0); group.add(sign);
             this.floorGroup.add(group);
             this.sceneObjects.push({ ...def, group, sign });
         });
-
         if (floorNum === 1 && !this.hasBat) {
             const batObj = { id: 'secret_bat', type: 'bat_pickup', x: -9.5, z: -7.5, icon: '🏏', name: 'Подобрать биту', color: '#f59e0b' };
             const pickupGroup = new THREE.Group(); pickupGroup.position.set(batObj.x, 1.1, batObj.z);
@@ -892,12 +949,17 @@ class Casino3DGame {
             this.floorGroup.add(rig.root);
             this.npcs.push({ mesh: rig.root, rig, x: sx, z: sz, vx: (Math.random() - 0.5) * 2.2, vz: (Math.random() - 0.5) * 2.2, ragdollTimer: 0, vy: 0, rx: 0, rz: 0, vrx: 0, vry: 0, vrz: 0, walkPhase: Math.random() * 10 });
         }
+        this.floorGroup.traverse((obj) => {
+            if (!obj.isMesh) return;
+            if (obj.geometry && obj.geometry.type !== 'PlaneGeometry') obj.castShadow = true;
+            if (obj.position.y <= 0.25 || obj.geometry?.type === 'PlaneGeometry') obj.receiveShadow = true;
+        });
     }
 
     getTargetForNight(nightNum) {
-        if (nightNum <= 1) return 1200;
-        const prev = this.getTargetForNight(nightNum - 1);
-        return Math.round(prev * 2.5);
+        const targets = [1200, 2000, 3500, 6000, 10000, 17500, 30000, 50000, 85000, 150000];
+        if (nightNum <= targets.length) return targets[nightNum - 1];
+        return Math.round((this.getTargetForNight(nightNum - 1) * 1.65) / 500) * 500;
     }
 
     startNewGame() {
@@ -1151,7 +1213,6 @@ class Casino3DGame {
             <button onclick="game.startNewGame()" class="btn-casino w-full py-3.5 rounded-2xl bg-red-600 hover:bg-red-500 text-white font-black text-base uppercase">${this.lang === 'ru' ? 'Попробовать снова ↻' : 'Try again ↻'}</button>
         `;
         card.querySelector('p').textContent = reason;
-        overlay.classList.add('hidden');
         overlay.classList.remove('hidden');
     }
 
@@ -1165,6 +1226,7 @@ class Casino3DGame {
         ctx.fillStyle = textHex; ctx.font = '900 34px Inter, sans-serif';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label, 128, 64);
         const texture = new THREE.CanvasTexture(canvas);
+        texture.encoding = THREE.sRGBEncoding;
         const topMaterial = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.3 });
         const sideMaterial = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.5 });
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, 0.08, d), [sideMaterial, sideMaterial, topMaterial, sideMaterial, sideMaterial, sideMaterial]);
@@ -1181,7 +1243,9 @@ class Casino3DGame {
     create3DScreenTexture(width = 512, height = 320) {
         const canvas = document.createElement('canvas');
         canvas.width = width; canvas.height = height;
-        return { canvas, ctx: canvas.getContext('2d'), tex: new THREE.CanvasTexture(canvas) };
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.encoding = THREE.sRGBEncoding;
+        return { canvas, ctx: canvas.getContext('2d'), tex };
     }
 
     startElevatorRide(targetFloor) {
@@ -1208,7 +1272,7 @@ class Casino3DGame {
             return btn;
         };
 
-        const mState = { betStr: String(cfg.minBet), bet: cfg.minBet, busy: false, status: 'Ставка и игра!', buttons, scr };
+        const mState = { betStr: String(cfg.minBet), bet: cfg.minBet, busy: false, status: 'Введите ставку и играйте!', buttons, scr };
 
         const updateBetVal = (newB) => {
             const clamped = Math.max(0, Math.min(cfg.maxBet, newB));
@@ -1216,6 +1280,21 @@ class Casino3DGame {
             mState.betStr = String(clamped);
             if (mState.updateScreen) mState.updateScreen();
         };
+
+        const appendDigit = (digitStr) => {
+            sound.click();
+            if (mState.betStr === String(cfg.minBet) && mState.betStr.length <= 3 && !mState._userTyping) {
+                mState.betStr = digitStr;
+                mState._userTyping = true;
+            } else if (mState.betStr === '0' || mState.betStr.length >= 6) {
+                mState.betStr = digitStr;
+            } else {
+                mState.betStr += digitStr;
+            }
+            updateBetVal(parseInt(mState.betStr, 10) || 0);
+        };
+
+        mState._userTyping = false;
 
         const kX = -0.14, kZ = 0.02, kw = 0.13, kd = 0.08, kg = 0.015;
         const keyLayout = [
@@ -1233,21 +1312,20 @@ class Casino3DGame {
                 addBtn(key, bgCol, fgCol, bx, bz, kw, kd, () => {
                     if (key === 'DEL') {
                         sound.click();
+                        mState._userTyping = true;
                         mState.betStr = mState.betStr.length > 1 ? mState.betStr.slice(0, -1) : '0';
                         updateBetVal(parseInt(mState.betStr, 10) || 0);
                     } else {
-                        sound.click();
-                        mState.betStr = mState.betStr === String(cfg.minBet) ? key : (mState.betStr + key);
-                        updateBetVal(parseInt(mState.betStr, 10) || 0);
+                        appendDigit(key);
                     }
                 }, terminalDesk);
             });
         });
 
         const rX = 0.22;
-        addBtn('MIN', '#b45309', '#fef08a', rX, -0.07, 0.22, 0.08, () => { sound.click(); updateBetVal(cfg.minBet); }, terminalDesk);
-        addBtn('1/2', '#b45309', '#fef08a', rX, 0.02, 0.22, 0.08, () => { sound.click(); updateBetVal(Math.round(mState.bet / 2)); }, terminalDesk);
-        addBtn('2X', '#b45309', '#fef08a', rX, 0.11, 0.22, 0.08, () => { sound.click(); updateBetVal(mState.bet * 2); }, terminalDesk);
+        addBtn('MIN', '#b45309', '#fef08a', rX, -0.07, 0.22, 0.08, () => { sound.click(); mState._userTyping = true; updateBetVal(cfg.minBet); }, terminalDesk);
+        addBtn('1/2', '#b45309', '#fef08a', rX, 0.02, 0.22, 0.08, () => { sound.click(); mState._userTyping = true; updateBetVal(Math.round(mState.bet / 2)); }, terminalDesk);
+        addBtn('2X', '#b45309', '#fef08a', rX, 0.11, 0.22, 0.08, () => { sound.click(); mState._userTyping = true; updateBetVal(mState.bet * 2); }, terminalDesk);
 
         const drawBaseHUD = (accentColor) => {
             const { ctx, canvas } = scr;
@@ -1262,161 +1340,397 @@ class Casino3DGame {
             ctx.fillText(`СТАВКА: $${mState.bet.toLocaleString()}`, canvas.width - 24, 39);
 
             ctx.fillStyle = '#18181b'; ctx.fillRect(12, canvas.height - 54, canvas.width - 24, 42);
-            ctx.font = 'bold 18px Inter, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = isInvalid ? '#fca5a5' : '#fef08a';
+            ctx.font = 'bold 19px Inter, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = isInvalid ? '#fca5a5' : '#fef08a';
             ctx.fillText(isInvalid ? (mState.bet < cfg.minBet ? `Мин. ставка: $${cfg.minBet}` : 'Недостаточно средств') : mState.status, canvas.width / 2, canvas.height - 27);
         };
 
-        if (def.type === 'plinko') {
-            // ПИНГВИНЧИКИ (Шаг или Стоп) с видимым 3D-пингвином на крыше автомата
-            let stepIndex = 0; 
-            const multiList = [1.0, 1.25, 1.5, 2.0, 5.0, 10.0, 15.0, 25.0, 50.0];
-            let activeStake = 0;
-            let gameActive = false;
-            let penguinAnimOffset = 0;
-            let fallAnim = 0;
+        mState.updateScreen = () => {
+            drawBaseHUD(def.color || '#fbbf24');
+            const { ctx, canvas } = scr;
+            ctx.textAlign = 'center';
+            ctx.fillStyle = def.color || '#fbbf24';
+            ctx.font = '64px sans-serif';
+            ctx.fillText(def.icon || '🎮', canvas.width / 2, 150);
+            ctx.fillStyle = '#f4f4f5';
+            ctx.font = 'bold 22px Inter, sans-serif';
+            ctx.fillText(def.name || 'Игровой автомат', canvas.width / 2, 198);
+            scr.tex.needsUpdate = true;
+        };
 
-            // Ледяная платформа сверху автомата (на высоте 2.33, снаружи корпуса!)
-            const iceStage = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.55, 0.62, 0.08, 16),
-                new THREE.MeshStandardMaterial({ color: 0xbae6fd, roughness: 0.2, metalness: 0.1 })
-            );
-            iceStage.position.set(0, 2.35, 0.15);
-            group.add(iceStage);
+        if (def.type === 'slots') {
+            const symbols = ['🍒', '🍋', '🔔', '💎', '7️⃣'];
+            const payouts = { '🍒': 3, '🍋': 4, '🔔': 7, '💎': 12, '7️⃣': 25 };
+            let curSyms = ['7️⃣', '💎', '🍒'];
 
-            // Детальный 3D Пингвин сверху автомата (виден игроку!)
-            const pModel = new THREE.Group();
-            const pBody = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.14, 0.19, 0.44, 14),
-                new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.4 })
-            );
-            pBody.position.y = 0.22;
+            mState.updateScreen = () => {
+                drawBaseHUD('#f59e0b');
+                const { ctx, canvas } = scr;
+                curSyms.forEach((s, idx) => {
+                    const bx = 95 + idx * 160;
+                    ctx.fillStyle = '#1f1f23'; ctx.beginPath(); ctx.roundRect(bx - 62, 82, 124, 130, 16); ctx.fill();
+                    ctx.strokeStyle = '#f59e0b'; ctx.lineWidth = 3; ctx.stroke();
+                    ctx.font = '64px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(s, bx, 166);
+                });
+                scr.tex.needsUpdate = true;
+            };
 
-            const pBelly = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.11, 0.15, 0.36, 12),
-                new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3 })
-            );
-            pBelly.position.set(0, 0.20, 0.06);
+            const spinSlots = () => {
+                if (mState.busy) return;
+                if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
+                if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
+                mState.busy = true; const stake = mState.bet; this.changeBalance(-stake);
+                mState.status = 'Барабаны крутятся...'; mState.updateScreen();
 
-            const pHead = new THREE.Mesh(
-                new THREE.SphereGeometry(0.135, 14, 14),
-                new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.4 })
-            );
-            pHead.position.y = 0.50;
+                const pick = () => { const r = Math.random(); return r < 0.34 ? '🍒' : r < 0.62 ? '🍋' : r < 0.82 ? '🔔' : r < 0.94 ? '💎' : '7️⃣'; };
+                let res = [pick(), pick(), pick()];
+                if (this.perks.clover && res[0] !== res[1] && Math.random() < 0.14) res[1] = res[0];
 
-            const pBeak = new THREE.Mesh(
-                new THREE.ConeGeometry(0.045, 0.12, 8),
-                new THREE.MeshStandardMaterial({ color: 0xf97316, roughness: 0.3 })
-            );
-            pBeak.rotation.x = Math.PI / 2;
-            pBeak.position.set(0, 0.48, 0.16);
+                let ticks = 0;
+                const iv = setInterval(() => {
+                    ticks++; sound.spinTick();
+                    for (let i = 0; i < 3; i++) curSyms[i] = ticks >= 10 + i * 4 ? res[i] : symbols[Math.floor(Math.random() * symbols.length)];
+                    mState.updateScreen();
+                    if (ticks >= 20) {
+                        clearInterval(iv); mState.busy = false;
+                        if (res[0] === res[1] && res[1] === res[2]) {
+                            const win = stake * payouts[res[0]]; sound.bigWin(); this.changeBalance(win);
+                            mState.status = `ДЖЕКПОТ ${res[0]}${res[0]}${res[0]}! +$${win.toLocaleString()}!`;
+                        } else if (res[0] === res[1] || res[1] === res[2] || res[0] === res[2]) {
+                            const win = Math.round(stake * 1.5); sound.win(); this.changeBalance(win);
+                            mState.status = `ПАРА! +$${win.toLocaleString()}!`;
+                        } else {
+                            sound.lose(); const saved = this.notifyRoundLoss(stake);
+                            mState.status = saved ? 'Жетон спас ставку!' : 'Мимо! Ещё раз.';
+                        }
+                        mState.updateScreen();
+                    }
+                }, 60);
+            };
 
-            const eyeGeo = new THREE.SphereGeometry(0.025, 8, 8);
-            const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-            const eyeL = new THREE.Mesh(eyeGeo, eyeMat); eyeL.position.set(-0.055, 0.53, 0.11);
-            const eyeR = new THREE.Mesh(eyeGeo, eyeMat); eyeR.position.set(0.055, 0.53, 0.11);
+            addBtn('КРУТИТЬ 🎰', '#f59e0b', '#09090b', 0.0, 0.38, 1.45, 0.18, spinSlots, deck);
 
-            const wingGeo = new THREE.BoxGeometry(0.05, 0.26, 0.11);
-            const wingMat = new THREE.MeshStandardMaterial({ color: 0x09090b });
-            const wingL = new THREE.Mesh(wingGeo, wingMat); wingL.position.set(-0.18, 0.25, 0); wingL.rotation.z = 0.25;
-            const wingR = new THREE.Mesh(wingGeo, wingMat); wingR.position.set(0.18, 0.25, 0); wingR.rotation.z = -0.25;
-
-            pModel.add(pBody, pBelly, pHead, pBeak, eyeL, eyeR, wingL, wingR);
-            pModel.position.set(0, 2.39, 0.15);
-            group.add(pModel);
+        } else if (def.type === 'plinko') {
+            let risk = 'medium';
+            const multTables = {
+                low: [5.5, 2.2, 1.4, 1.1, 0.7, 1.1, 1.4, 2.2, 5.5],
+                medium: [14, 4.0, 1.8, 0.8, 0.3, 0.8, 1.8, 4.0, 14],
+                high: [30, 7.0, 2.0, 0.4, 0.2, 0.4, 2.0, 7.0, 30]
+            };
+            const penguins = []; const pegs = [];
+            for (let r = 0; r < 6; r++) {
+                const cnt = r + 3, rowW = (cnt - 1) * 44, sx = 256 - rowW / 2;
+                for (let c = 0; c < cnt; c++) pegs.push({ x: sx + c * 44, y: 78 + r * 26 });
+            }
 
             mState.updateScreen = () => {
                 drawBaseHUD('#38bdf8');
-                const { ctx, canvas } = scr;
-                ctx.textAlign = 'center';
-                ctx.fillStyle = '#38bdf8'; ctx.font = 'bold 32px monospace';
-                ctx.fillText(gameActive ? `ШАГ ${stepIndex + 1} | x${multiList[Math.min(stepIndex, multiList.length - 1)]}` : '🐧 ПИНГВИНЧИКИ НА ЛЬДИНЕ', canvas.width / 2, 125);
-                
-                ctx.font = 'bold 18px Inter'; ctx.fillStyle = '#ffffff';
-                if (!gameActive) {
-                    ctx.fillText('Нажмите «ИГРАТЬ» для старта', canvas.width / 2, 185);
-                } else {
-                    const currentWin = Math.round(activeStake * multiList[stepIndex]);
-                    ctx.fillStyle = '#34d399';
-                    ctx.fillText(`Текущий выигрыш: $${currentWin.toLocaleString()}`, canvas.width / 2, 175);
-                    ctx.fillStyle = '#fef08a';
-                    ctx.font = '14px Inter';
-                    ctx.fillText(`Риск падения: ${Math.round(8 + stepIndex * 9)}%`, canvas.width / 2, 205);
+                const { ctx } = scr;
+                ctx.fillStyle = '#38bdf8';
+                for (const p of pegs) { ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); }
+                const m = multTables[risk], sw = 44, startX = 256 - (9 * sw) / 2;
+                for (let i = 0; i < 9; i++) {
+                    ctx.fillStyle = m[i] >= 5 ? '#dc2626' : m[i] >= 1.5 ? '#d97706' : '#0284c7';
+                    ctx.fillRect(startX + i * sw + 2, 232, sw - 4, 24);
+                    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'center';
+                    ctx.fillText(`${m[i]}x`, startX + i * sw + sw / 2, 248);
                 }
+                for (const pg of penguins) { ctx.font = '20px sans-serif'; ctx.fillText('🐧', pg.x, pg.y); }
                 scr.tex.needsUpdate = true;
             };
 
             mState.tickAnim = (dt) => {
-                if (fallAnim > 0) {
-                    fallAnim -= dt;
-                    pModel.rotation.x += dt * 7;
-                    pModel.position.y -= dt * 0.4;
-                    if (fallAnim <= 0) {
-                        pModel.rotation.set(0, 0, 0);
-                        pModel.position.set(0, 2.39, 0.15);
+                if (penguins.length === 0) return;
+                const startX = 256 - (9 * 44) / 2;
+                for (let i = penguins.length - 1; i >= 0; i--) {
+                    const pg = penguins[i];
+                    pg.vy += 380 * dt; pg.x += pg.vx * dt; pg.y += pg.vy * dt;
+                    for (const peg of pegs) {
+                        if (Math.hypot(pg.x - peg.x, pg.y - peg.y) < 12) {
+                            pg.y = peg.y - 12; pg.vx = (Math.random() - 0.5) * 140; pg.vy = -55;
+                            sound.penguinBounce();
+                        }
                     }
-                    return;
+                    if (pg.y >= 232) {
+                        const idx = Math.max(0, Math.min(8, Math.floor((pg.x - startX) / 44)));
+                        const mult = multTables[pg.risk][idx];
+                        const win = Math.round(pg.stake * mult);
+                        if (win > 0) { this.changeBalance(win); if (mult >= 2) sound.win(); }
+                        if (win < pg.stake) this.notifyRoundLoss(pg.stake - win);
+                        mState.status = `Лунка ${mult}x → +$${win.toLocaleString()}!`;
+                        penguins.splice(i, 1);
+                    }
                 }
-                if (gameActive) {
-                    penguinAnimOffset += dt * 11;
-                    pModel.position.y = 2.39 + Math.abs(Math.sin(penguinAnimOffset)) * 0.16;
-                    pModel.rotation.y = Math.sin(penguinAnimOffset * 0.5) * 0.35;
-                    wingL.rotation.z = 0.25 + Math.sin(penguinAnimOffset * 2) * 0.3;
-                    wingR.rotation.z = -0.25 - Math.sin(penguinAnimOffset * 2) * 0.3;
-                } else {
-                    pModel.position.y = 2.39;
-                    pModel.rotation.y += dt * 0.8;
-                    wingL.rotation.z = 0.25;
-                    wingR.rotation.z = -0.25;
-                }
+                mState.updateScreen();
             };
 
-            addBtn('ИГРАТЬ 🐧', '#38bdf8', '#09090b', -0.48, 0.38, 0.42, 0.17, () => {
-                if (gameActive) return;
-                if (mState.bet < cfg.minBet || this.balance < mState.bet) {
-                    this.showToast('Недостаточно средств или мала ставка!', 'red'); return;
-                }
-                activeStake = mState.bet; this.changeBalance(-activeStake);
-                gameActive = true; stepIndex = 0; fallAnim = 0;
-                pModel.rotation.set(0, 0, 0);
-                pModel.position.set(0, 2.39, 0.15);
-                sound.spinTick(); mState.status = 'Выберите ШАГ или СТОП!';
+            addBtn('РИСК', '#0284c7', '#ffffff', -0.38, 0.38, 0.68, 0.18, () => {
+                sound.click(); risk = risk === 'low' ? 'medium' : risk === 'medium' ? 'high' : 'low';
+                mState.status = `Риск: ${risk.toUpperCase()}`; mState.updateScreen();
+            }, deck);
+            addBtn('ПУСК 🐧', '#38bdf8', '#09090b', 0.38, 0.38, 0.68, 0.18, () => {
+                if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
+                if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
+                this.changeBalance(-mState.bet); sound.click();
+                penguins.push({ x: 256 + (Math.random() - 0.5) * 16, y: 62, vx: (Math.random() - 0.5) * 35, vy: 30, stake: mState.bet, risk });
                 mState.updateScreen();
             }, deck);
 
-            addBtn('ШАГ 👣', '#10b981', '#09090b', 0.0, 0.38, 0.42, 0.17, () => {
-                if (!gameActive) { this.showToast('Сначала начните игру!', 'red'); return; }
-                sound.click();
-                const failChance = 0.08 + stepIndex * 0.09;
-                if (Math.random() < failChance || stepIndex >= multiList.length - 1) {
-                    sound.lose(); gameActive = false; fallAnim = 0.9;
-                    this.notifyRoundLoss(activeStake);
-                    mState.status = `Льдина треснула на шаге ${stepIndex + 1}! -$${activeStake}.`;
+        } else if (def.type === 'dice') {
+            let dVals = [3, 4];
+            mState.updateScreen = () => {
+                drawBaseHUD('#8b5cf6');
+                const { ctx } = scr;
+                ctx.font = 'bold 54px "JetBrains Mono", monospace'; ctx.textAlign = 'center'; ctx.fillStyle = '#ffffff';
+                ctx.fillText(`[ ${dVals[0]} ] + [ ${dVals[1]} ] = ${dVals[0] + dVals[1]}`, 256, 160);
+                scr.tex.needsUpdate = true;
+            };
+
+            const roll = (choice) => {
+                if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
+                if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
+                const stake = mState.bet; this.changeBalance(-stake); sound.spinTick();
+                let a = Math.floor(Math.random() * 6) + 1, b = Math.floor(Math.random() * 6) + 1, sum = a + b;
+                dVals = [a, b];
+                let win = 0;
+                if (choice === 'under' && sum < 7) win = Math.round(stake * 2.2);
+                else if (choice === 'over' && sum > 7) win = Math.round(stake * 2.2);
+                else if (choice === 'seven' && sum === 7) win = stake * 5;
+
+                if (win > 0) { sound.win(); this.changeBalance(win); mState.status = `Выпало ${sum}! +$${win.toLocaleString()}!`; }
+                else { sound.lose(); const saved = this.notifyRoundLoss(stake); mState.status = saved ? `Выпало ${sum}. Жетон спас!` : `Выпало ${sum}. Проигрыш.`; }
+                mState.updateScreen();
+            };
+
+            addBtn('< 7', '#4f46e5', '#ffffff', -0.52, 0.38, 0.46, 0.18, () => roll('under'), deck);
+            addBtn('= 7', '#f59e0b', '#09090b', 0.0, 0.38, 0.46, 0.18, () => roll('seven'), deck);
+            addBtn('> 7', '#9333ea', '#ffffff', 0.52, 0.38, 0.46, 0.18, () => roll('over'), deck);
+
+        } else if (def.type === 'blackjack') {
+            const suits = ['♠', '♥', '♦', '♣'];
+            const ranks = [{l:'2',v:2},{l:'3',v:3},{l:'4',v:4},{l:'5',v:5},{l:'6',v:6},{l:'7',v:7},{l:'8',v:8},{l:'9',v:9},{l:'10',v:10},{l:'J',v:10},{l:'Q',v:10},{l:'K',v:10},{l:'A',v:11}];
+            const drawC = () => { const r = ranks[Math.floor(Math.random()*ranks.length)], s = suits[Math.floor(Math.random()*suits.length)]; return {l:r.l, v:r.v, s, red: s==='♥'||s==='♦'}; };
+            const calc = h => { let sum = h.reduce((a,b)=>a+b.v,0), aces = h.filter(c=>c.v===11).length; while(sum>21&&aces>0){sum-=10;aces--;} return sum; };
+            let pHand = [], dHand = [], inRound = false, stake = cfg.minBet, reveal = false;
+
+            mState.updateScreen = () => {
+                drawBaseHUD('#14b8a6'); const { ctx } = scr;
+                ctx.font = 'bold 16px Inter, sans-serif'; ctx.textAlign = 'left'; ctx.fillStyle = '#a7f3d0';
+                ctx.fillText(`ДИЛЕР: ${dHand.length ? (reveal ? calc(dHand) : dHand[0].v) : '?'}`, 24, 80);
+                dHand.forEach((c, i) => {
+                    const hid = !reveal && i === 1;
+                    ctx.fillStyle = hid ? '#7f1d1d' : '#f4f4f5'; ctx.fillRect(24 + i * 46, 88, 40, 56);
+                    ctx.fillStyle = hid ? '#fbbf24' : (c.red ? '#dc2626' : '#09090b'); ctx.font = 'bold 18px monospace';
+                    ctx.fillText(hid ? '🂠' : `${c.l}${c.s}`, 28 + i * 46, 122);
+                });
+                ctx.fillStyle = '#6ee7b7'; ctx.fillText(`ВЫ: ${pHand.length ? calc(pHand) : 0}`, 24, 170);
+                pHand.forEach((c, i) => {
+                    ctx.fillStyle = '#f4f4f5'; ctx.fillRect(24 + i * 46, 178, 40, 56);
+                    ctx.fillStyle = c.red ? '#dc2626' : '#09090b'; ctx.font = 'bold 18px monospace';
+                    ctx.fillText(`${c.l}${c.s}`, 28 + i * 46, 212);
+                });
+                scr.tex.needsUpdate = true;
+            };
+
+            const finishD = () => {
+                while(calc(dHand)<17) dHand.push(drawC());
+                reveal = true; inRound = false;
+                const ps = calc(pHand), ds = calc(dHand);
+                if (ds > 21 || ps > ds) { const win = stake * 2; sound.win(); this.changeBalance(win); mState.status = `ПОБЕДА! +$${win.toLocaleString()}!`; }
+                else if (ps === ds) { sound.coin(); this.changeBalance(stake); mState.status = 'Ничья.'; }
+                else { sound.lose(); const saved = this.notifyRoundLoss(stake); mState.status = saved ? 'Жетон спас!' : 'Дилер победил.'; }
+                mState.updateScreen();
+            };
+
+            addBtn('РАЗДАТЬ', '#14b8a6', '#09090b', -0.56, 0.38, 0.35, 0.18, () => {
+                if (inRound) return;
+                if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
+                if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
+                sound.click(); stake = mState.bet; this.changeBalance(-stake); inRound = true; reveal = false;
+                pHand = [drawC(), drawC()]; dHand = [drawC(), drawC()];
+                mState.status = 'Ваш ход!'; mState.updateScreen();
+            }, deck);
+            addBtn('ЕЩЁ', '#f59e0b', '#09090b', -0.18, 0.38, 0.32, 0.18, () => {
+                if (!inRound) return; sound.click(); pHand.push(drawC());
+                if (calc(pHand) > 21) { reveal = true; inRound = false; sound.lose(); this.notifyRoundLoss(stake); mState.status = 'Перебор!'; }
+                mState.updateScreen();
+            }, deck);
+            addBtn('ХВАТИТ', '#52525b', '#ffffff', 0.18, 0.38, 0.32, 0.18, () => { if (inRound) finishD(); }, deck);
+            addBtn('x2', '#9333ea', '#ffffff', 0.56, 0.38, 0.32, 0.18, () => {
+                if (!inRound || pHand.length !== 2 || this.balance < stake) return;
+                sound.coin(); this.changeBalance(-stake); stake *= 2; pHand.push(drawC());
+                if (calc(pHand) > 21) {
+                    reveal = true; inRound = false; sound.lose();
+                    const saved = this.notifyRoundLoss(stake);
+                    mState.status = saved ? 'Перебор! Жетон спас ставку.' : 'Перебор!';
                     mState.updateScreen();
-                    this.showToast(`🐧 Льдина проломилась! Вы проиграли $${activeStake}`, 'red');
-                } else {
-                    sound.penguinBounce();
-                    stepIndex++;
-                    const curM = multiList[stepIndex];
-                    mState.status = `Успешный шаг! Множитель x${curM}`;
-                    mState.updateScreen();
-                    this.showToast(`🐧 Шаг успешен! Текущий множитель x${curM}`, 'green');
-                }
+                } else finishD();
             }, deck);
 
-            addBtn('СТОП 💰', '#ef4444', '#ffffff', 0.48, 0.38, 0.42, 0.17, () => {
-                if (!gameActive) return;
-                const finalWin = Math.round(activeStake * multiList[stepIndex]);
-                sound.bigWin(); this.changeBalance(finalWin);
-                gameActive = false;
-                mState.status = `Забрано $${finalWin.toLocaleString()} (x${multiList[stepIndex]})!`;
-                mState.updateScreen();
-                this.showToast(`🐧 Вы вовремя забрали $${finalWin.toLocaleString()}!`, 'green');
+        } else if (def.type === 'ducks') {
+            addBtn('ВЫБОР УТКИ', '#3f3f46', '#facc15', -0.38, 0.38, 0.68, 0.18, () => {
+                sound.click(); mState.status = `Выбрана утка`; mState.updateScreen();
             }, deck);
+            addBtn('СТАРТ 🦆', '#eab308', '#09090b', 0.38, 0.38, 0.68, 0.18, () => {
+                if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
+                if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
+                this.changeBalance(-mState.bet); sound.duckQuack();
+                const win = Math.random() < 0.4 ? Math.round(mState.bet * 2.5) : 0;
+                if (win > 0) { sound.bigWin(); this.changeBalance(win); mState.status = `Победа! +$${win.toLocaleString()}!`; }
+                else { sound.lose(); this.notifyRoundLoss(mState.bet); mState.status = 'Утка пришла второй.'; }
+                mState.updateScreen();
+            }, deck);
+
+        } else if (def.type === 'roulette') {
+            const redNums = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36];
+            const rouletteSectors = [
+                { num: 0, color: '#059669' }, { num: 32, color: '#dc2626' }, { num: 15, color: '#18181b' },
+                { num: 19, color: '#dc2626' }, { num: 4, color: '#18181b' }, { num: 21, color: '#dc2626' },
+                { num: 2, color: '#18181b' }, { num: 25, color: '#dc2626' }, { num: 17, color: '#18181b' },
+                { num: 34, color: '#dc2626' }, { num: 6, color: '#18181b' }, { num: 27, color: '#dc2626' },
+                { num: 13, color: '#18181b' }, { num: 36, color: '#dc2626' }, { num: 11, color: '#18181b' },
+                { num: 30, color: '#dc2626' }, { num: 8, color: '#18181b' }, { num: 23, color: '#dc2626' },
+                { num: 10, color: '#18181b' }, { num: 5, color: '#dc2626' }, { num: 24, color: '#18181b' },
+                { num: 16, color: '#dc2626' }, { num: 33, color: '#18181b' }, { num: 1, color: '#dc2626' },
+                { num: 20, color: '#18181b' }, { num: 14, color: '#dc2626' }, { num: 31, color: '#18181b' },
+                { num: 9, color: '#dc2626' }, { num: 22, color: '#18181b' }, { num: 18, color: '#dc2626' },
+                { num: 29, color: '#18181b' }, { num: 7, color: '#dc2626' }, { num: 28, color: '#18181b' },
+                { num: 12, color: '#dc2626' }, { num: 35, color: '#18181b' }, { num: 3, color: '#dc2626' },
+                { num: 26, color: '#18181b' }
+            ];
+            let rouletteAngle = 0;
+            let isSpinningR = false;
+
+            mState.updateScreen = () => {
+                drawBaseHUD('#ef4444');
+                const { ctx, canvas } = scr;
+                const cx = 256, cy = 150, radius = 95;
+
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(rouletteAngle);
+
+                const arc = (Math.PI * 2) / rouletteSectors.length;
+                rouletteSectors.forEach((sec, idx) => {
+                    const startAngle = idx * arc;
+                    const endAngle = (idx + 1) * arc;
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.arc(0, 0, radius, startAngle, endAngle);
+                    ctx.closePath();
+                    ctx.fillStyle = sec.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#27272a';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+
+                    ctx.save();
+                    ctx.rotate(startAngle + arc / 2);
+                    ctx.textAlign = 'right';
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = 'bold 12px monospace';
+                    ctx.fillText(sec.num, radius - 10, 4);
+                    ctx.restore();
+                });
+
+                ctx.restore();
+
+                ctx.beginPath();
+                ctx.moveTo(cx, cy - radius - 14);
+                ctx.lineTo(cx - 10, cy - radius - 28);
+                ctx.lineTo(cx + 10, cy - radius - 28);
+                ctx.closePath();
+                ctx.fillStyle = '#facc15';
+                ctx.fill();
+                ctx.strokeStyle = '#09090b';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+                ctx.fillStyle = '#fef08a';
+                ctx.fill();
+                ctx.strokeStyle = '#09090b';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                scr.tex.needsUpdate = true;
+            };
+
+            const spinRoulette = (sectorType) => {
+                if (isSpinningR) return;
+                if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
+                if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
+
+                const stake = mState.bet;
+                this.changeBalance(-stake);
+                isSpinningR = true;
+                mState.status = 'Рулетка крутится...';
+                mState.updateScreen();
+
+                const targetIndex = Math.floor(Math.random() * rouletteSectors.length);
+                const arc = (Math.PI * 2) / rouletteSectors.length;
+                const extraSpins = 6 + Math.floor(Math.random() * 4);
+                const fullTurn = Math.PI * 2;
+                const desiredAngle = -Math.PI / 2 - (targetIndex + 0.5) * arc;
+                const currentNormalized = ((rouletteAngle % fullTurn) + fullTurn) % fullTurn;
+                const desiredNormalized = ((desiredAngle % fullTurn) + fullTurn) % fullTurn;
+                const alignmentTurn = (desiredNormalized - currentNormalized + fullTurn) % fullTurn;
+                const targetAngle = rouletteAngle + extraSpins * fullTurn + alignmentTurn;
+
+                let startAngle = rouletteAngle;
+                let startTime = performance.now();
+                const duration = 2600;
+
+                const animateRoulette = (now) => {
+                    const elapsed = now - startTime;
+                    const progress = Math.min(1, elapsed / duration);
+                    const ease = 1 - Math.pow(1 - progress, 3);
+
+                    rouletteAngle = startAngle + (targetAngle - startAngle) * ease;
+                    mState.updateScreen();
+                    sound.spinTick();
+
+                    if (progress < 1) {
+                        requestAnimationFrame(animateRoulette);
+                    } else {
+                        isSpinningR = false;
+                        const finalSec = rouletteSectors[targetIndex];
+                        const finalNum = finalSec.num;
+                        const isRed = redNums.includes(finalNum);
+                        const isGreen = (finalNum === 0);
+                        const actualColor = isGreen ? 'green' : isRed ? 'red' : 'black';
+
+                        let win = 0;
+                        if (sectorType === actualColor) {
+                            win = stake * (sectorType === 'green' ? 35 : 2);
+                        }
+
+                        if (win > 0) {
+                            sound.bigWin();
+                            this.changeBalance(win);
+                            mState.status = `Выпало ${finalNum} (${actualColor.toUpperCase()})! +$${win.toLocaleString()}!`;
+                        } else {
+                            sound.lose();
+                            const saved = this.notifyRoundLoss(stake);
+                            mState.status = saved
+                                ? `Выпало ${finalNum}. Жетон спас ставку!`
+                                : `Выпало ${finalNum} (${actualColor.toUpperCase()}). Проигрыш.`;
+                        }
+                        mState.updateScreen();
+                    }
+                };
+
+                requestAnimationFrame(animateRoulette);
+            };
+
+            addBtn('КРАСНОЕ 🔴', '#dc2626', '#ffffff', -0.52, 0.38, 0.46, 0.18, () => spinRoulette('red'), deck);
+            addBtn('ЗЕРО 🟢', '#059669', '#ffffff', 0.0, 0.38, 0.46, 0.18, () => spinRoulette('green'), deck);
+            addBtn('ЧЁРНОЕ ⚫', '#27272a', '#ffffff', 0.52, 0.38, 0.46, 0.18, () => spinRoulette('black'), deck);
 
         } else if (def.type === 'crash') {
             let rocketState = 'idle';
             let mult = 1.0, stake = 0, crashAt = 1.5;
-            let flightTime = 0;
             let rocketModel = new THREE.Group();
             const rBody = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.45, 12), new THREE.MeshStandardMaterial({ color: 0xf97316 }));
             rBody.position.y = 1.65;
@@ -1442,20 +1756,18 @@ class Casino3DGame {
                     this.showToast('Недостаточно средств или мала ставка!', 'red'); return;
                 }
                 stake = mState.bet; this.changeBalance(-stake);
-                rocketState = 'flying'; mult = 1.0; flightTime = 0;
-                crashAt = +(1.3 + Math.random() * 6.5).toFixed(2);
-                sound.spinTick(); mState.status = 'Ракета набирает скорость!'; mState.updateScreen();
+                rocketState = 'flying'; mult = 1.0; crashAt = +(1.2 + Math.random() * 4.5).toFixed(2);
+                sound.spinTick(); mState.status = 'Ракета летит!'; mState.updateScreen();
 
                 mState.tickAnim = (dt) => {
                     if (rocketState !== 'flying') return;
-                    flightTime += dt;
-                    mult += Math.pow(flightTime, 1.45) * dt * 0.95;
-                    rocketModel.position.y = 1.65 + Math.sin(Date.now() * 0.015) * (0.15 + flightTime * 0.02);
-                    rFlame.visible = Math.random() > 0.15;
+                    mult += dt * 1.8;
+                    rocketModel.position.y = Math.sin(Date.now() * 0.01) * 0.15;
+                    rFlame.visible = Math.random() > 0.2;
                     if (mult >= crashAt) {
                         rocketState = 'crashed'; sound.lose();
                         this.notifyRoundLoss(stake);
-                        mState.status = `Ракета взорвалась на ${crashAt.toFixed(2)}x!`;
+                        mState.status = `Ракета взорвалась на ${crashAt}x!`;
                         mState.updateScreen();
                     } else {
                         mState.updateScreen();
@@ -1472,20 +1784,141 @@ class Casino3DGame {
                 mState.updateScreen();
             }, deck);
 
-        } else {
+        } else if (def.type === 'wheel') {
+            const sectors = [
+                { mult: 0.1, color: '#52525b', label: '0.1x' },
+                { mult: 0.5, color: '#3f3f46', label: '0.5x' },
+                { mult: 1, color: '#eab308', label: '1x' },
+                { mult: 2, color: '#f97316', label: '2x' },
+                { mult: 3, color: '#ec4899', label: '3x' },
+                { mult: 5, color: '#8b5cf6', label: '5x' },
+                { mult: 10, color: '#3b82f6', label: '10x' },
+                { mult: 25, color: '#ef4444', label: '25x' }
+            ];
+            let wheelAngle = 0;
+            let isSpinning = false;
+
             mState.updateScreen = () => {
-                drawBaseHUD(def.color || '#fbbf24');
+                drawBaseHUD('#eab308');
                 const { ctx, canvas } = scr;
-                ctx.textAlign = 'center'; ctx.fillStyle = def.color || '#fbbf24'; ctx.font = '64px sans-serif';
-                ctx.fillText(def.icon || '🎮', canvas.width / 2, 150);
-                ctx.fillStyle = '#f4f4f5'; ctx.font = 'bold 22px Inter, sans-serif'; ctx.fillText(def.name, canvas.width / 2, 198);
+                const cx = 256, cy = 150, radius = 95;
+
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(wheelAngle);
+
+                const arc = (Math.PI * 2) / sectors.length;
+                sectors.forEach((sec, idx) => {
+                    const startAngle = idx * arc;
+                    const endAngle = (idx + 1) * arc;
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.arc(0, 0, radius, startAngle, endAngle);
+                    ctx.closePath();
+                    ctx.fillStyle = sec.color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#09090b';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+
+                    ctx.save();
+                    ctx.rotate(startAngle + arc / 2);
+                    ctx.textAlign = 'right';
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = 'bold 16px Inter, sans-serif';
+                    ctx.fillText(sec.label, radius - 16, 6);
+                    ctx.restore();
+                });
+
+                ctx.restore();
+
+                ctx.beginPath();
+                ctx.moveTo(cx, cy - radius - 14);
+                ctx.lineTo(cx - 10, cy - radius - 28);
+                ctx.lineTo(cx + 10, cy - radius - 28);
+                ctx.closePath();
+                ctx.fillStyle = '#facc15';
+                ctx.fill();
+                ctx.strokeStyle = '#09090b';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.arc(cx, cy, 14, 0, Math.PI * 2);
+                ctx.fillStyle = '#fef08a';
+                ctx.fill();
+                ctx.strokeStyle = '#09090b';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
                 scr.tex.needsUpdate = true;
             };
-            addBtn('ИГРАТЬ 🎲', def.color, '#09090b', 0.0, 0.38, 1.45, 0.18, () => {
-                if (mState.busy || this.balance < mState.bet) return;
-                mState.busy = true; this.changeBalance(-mState.bet); sound.coin();
-                setTimeout(() => { mState.busy = false; sound.win(); this.changeBalance(mState.bet * 2); }, 800);
-            }, deck);
+
+            const spinWheel = () => {
+                if (isSpinning) return;
+                if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
+                if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
+
+                const stake = mState.bet;
+                this.changeBalance(-stake);
+                isSpinning = true;
+                mState.status = 'Колесо вращается...';
+                mState.updateScreen();
+
+                const targetSecIndex = Math.floor(Math.random() * sectors.length);
+                const arc = (Math.PI * 2) / sectors.length;
+                const extraSpins = 5 + Math.floor(Math.random() * 3);
+                const fullTurn = Math.PI * 2;
+                const desiredAngle = -Math.PI / 2 - (targetSecIndex + 0.5) * arc;
+                const currentNormalized = ((wheelAngle % fullTurn) + fullTurn) % fullTurn;
+                const desiredNormalized = ((desiredAngle % fullTurn) + fullTurn) % fullTurn;
+                const alignmentTurn = (desiredNormalized - currentNormalized + fullTurn) % fullTurn;
+                const targetAngle = wheelAngle + extraSpins * fullTurn + alignmentTurn;
+
+                let startAngle = wheelAngle;
+                let startTime = performance.now();
+                const duration = 2400;
+
+                const animateWheel = (now) => {
+                    const elapsed = now - startTime;
+                    const progress = Math.min(1, elapsed / duration);
+                    const ease = 1 - Math.pow(1 - progress, 3);
+
+                    wheelAngle = startAngle + (targetAngle - startAngle) * ease;
+                    mState.updateScreen();
+                    sound.spinTick();
+
+                    if (progress < 1) {
+                        requestAnimationFrame(animateWheel);
+                    } else {
+                        isSpinning = false;
+                        const sec = sectors[targetSecIndex];
+                        const win = Math.round(stake * sec.mult);
+
+                        if (win > 0) this.changeBalance(win);
+
+                        if (win > stake) {
+                            sound.bigWin();
+                            mState.status = `Сектор ${sec.label}! Выигрыш +$${win.toLocaleString()}!`;
+                        } else if (win === stake) {
+                            sound.coin();
+                            mState.status = `Сектор ${sec.label}. Ставка возвращена.`;
+                        } else {
+                            sound.lose();
+                            const saved = this.notifyRoundLoss(stake - win);
+                            mState.status = saved
+                                ? `Сектор ${sec.label}. Жетон спас остаток!`
+                                : `Сектор ${sec.label}. Проигрыш.`;
+                        }
+                        mState.updateScreen();
+                    }
+                };
+
+                requestAnimationFrame(animateWheel);
+            };
+
+            addBtn('ВРАЩАТЬ 🎯', '#eab308', '#09090b', 0.0, 0.38, 1.45, 0.18, spinWheel, deck);
         }
 
         mState.updateScreen();
@@ -1540,46 +1973,26 @@ class Casino3DGame {
         if (floorNum > this.unlockedFloors) return;
         sound.coin(); this.currentFloor = floorNum;
         this.closeModal(); this.buildFloor3D(floorNum);
-        this.player.x = -7.5; this.player.z = -5.8; input.yaw = 0; input.pitch = -0.04;
+        this.resetPlayerPosition();
         this.updateHUD();
         this.showToast(this.lang === 'ru' ? `🛗 Вы на этаже: ${FLOOR_CONFIG[floorNum].name}` : `🛗 Floor: ${FLOOR_CONFIG[floorNum].name}`, 'amber');
     }
 
     syncRemotePlayers(remoteData) {
         this.remotePlayers = remoteData || {};
-        const keep = new Set();
-        for (const [uid, player] of Object.entries(this.remotePlayers)) {
-            if (!player || player.floor !== this.currentFloor) continue;
-            keep.add(uid);
-            let avatar = this.remoteAvatarMeshes[uid];
-            if (!avatar) {
-                const rig = this.createGoofyCharacterMesh(0x0284c7, 0xa3b18a, 0xfacc15);
-                avatar = rig.root;
-                const label = this.createSignSprite('👤', player.name || 'PLAYER', '#38bdf8');
-                label.scale.set(1.5, 0.48, 1);
-                label.position.set(0, 2.35, 0);
-                avatar.add(label);
-                this.remoteAvatarMeshes[uid] = avatar;
-                this.remotePlayersGroup.add(avatar);
-            }
-            avatar.position.set(Number(player.x) || 0, 0, Number(player.z) || 0);
-            avatar.rotation.y = (Number(player.yaw) || 0) + Math.PI;
+        while (this.remotePlayersGroup.children.length > 0) {
+            this.remotePlayersGroup.remove(this.remotePlayersGroup.children[0]);
         }
-        for (const [uid, avatar] of Object.entries(this.remoteAvatarMeshes)) {
-            if (!keep.has(uid)) {
-                this.remotePlayersGroup.remove(avatar);
-                avatar.traverse(obj => {
-                    if (obj.geometry && obj.geometry.dispose) obj.geometry.dispose();
-                    if (obj.material) {
-                        const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
-                        materials.forEach(material => {
-                            if (material.map && material.map.dispose) material.map.dispose();
-                            if (material.dispose) material.dispose();
-                        });
-                    }
-                });
-                delete this.remoteAvatarMeshes[uid];
-            }
+        for (const [uid, p] of Object.entries(this.remotePlayers)) {
+            if (p.floor !== this.currentFloor) continue;
+            const rig = this.createGoofyCharacterMesh(0x0284c7, 0xa3b18a, 0xfacc15);
+            const avatar = rig.root;
+            const label = this.createSignSprite('👤', p.name || 'ДРУГ', '#38bdf8');
+            label.scale.set(1.5, 0.48, 1); label.position.set(0, 2.35, 0);
+            avatar.add(label);
+            avatar.position.set(p.x || 0, 0, p.z || 0);
+            avatar.rotation.y = (p.yaw || 0) + Math.PI;
+            this.remotePlayersGroup.add(avatar);
         }
     }
 
@@ -1599,6 +2012,7 @@ class Casino3DGame {
         }
 
         this.checkHoverButtons();
+
         for (const obj of this.sceneObjects) {
             const machine = obj.machine3D;
             if (machine && typeof machine.tickAnim === 'function') machine.tickAnim(dt);
@@ -1703,6 +2117,31 @@ class Casino3DGame {
         this.renderer.render(this.scene, this.camera);
         requestAnimationFrame((t) => this.loop(t));
     }
+}
+
+function addCasinoAtmosphere(gameRef, floorNum) {
+    const goldMat = new THREE.MeshStandardMaterial({ color: 0xd6ad55, metalness: 0.85, roughness: 0.22 });
+    [[-5.5, 1.5], [5.5, 1.5], [0, -5.5]].forEach(([lx, lz]) => {
+        const chand = new THREE.Group();
+        chand.position.set(lx, 4.9, lz);
+        const chain = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.6, 8), goldMat);
+        chain.position.y = 0.15;
+        const crown = new THREE.Mesh(new THREE.TorusGeometry(0.75, 0.05, 10, 24), goldMat);
+        crown.rotation.x = Math.PI / 2; crown.position.y = -0.25;
+        const innerCrown = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.04, 8, 18), goldMat);
+        innerCrown.rotation.x = Math.PI / 2; innerCrown.position.y = -0.45;
+        const crystalMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xf59e0b, emissiveIntensity: 0.7, roughness: 0.1 });
+        for (let k = 0; k < 8; k++) {
+            const ang = (k / 8) * Math.PI * 2;
+            const drop = new THREE.Mesh(new THREE.OctahedronGeometry(0.09, 0), crystalMat);
+            drop.position.set(Math.cos(ang) * 0.75, -0.42, Math.sin(ang) * 0.75);
+            chand.add(drop);
+        }
+        const pt = new THREE.PointLight(0xfde68a, 0.75, 13);
+        pt.position.y = -0.6;
+        chand.add(chain, crown, innerCrown, pt);
+        gameRef.floorGroup.add(chand);
+    });
 }
 
 const MiniGames = {
