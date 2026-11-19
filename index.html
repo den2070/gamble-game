@@ -90,6 +90,10 @@
                 class="hidden bg-amber-500/20 hover:bg-amber-500/40 border border-amber-400 rounded-xl px-2.5 py-2 text-amber-300 font-bold text-sm shadow-lg">
                 🏏 <span class="hidden sm:inline text-xs">[F]</span>
             </button>
+            <button id="btnFullscreen" onclick="toggleFullscreen()" title="Полный экран"
+                class="bg-zinc-900/95 hover:bg-zinc-800 border border-zinc-700 rounded-xl p-2 text-zinc-300 shadow-lg">
+                ⛶
+            </button>
             <button id="btnAudio" onclick="sound.toggleMute()" title="Звук"
                 class="bg-zinc-900/95 hover:bg-zinc-800 border border-zinc-700 rounded-xl p-2 text-zinc-300 shadow-lg">
                 🔊
@@ -98,7 +102,7 @@
     </div>
 
     <!-- Мобильный джойстик слева -->
-    <div id="mobileJoystickArea" class="hidden fixed top-0 left-0 w-1/2 h-1/2 z-20 pointer-events-auto touch-none flex items-center justify-center">
+    <div id="mobileJoystickArea" class="hidden fixed w-56 h-56 z-20 pointer-events-auto touch-none flex items-center justify-center" style="left: max(8px, env(safe-area-inset-left)); bottom: max(8px, env(safe-area-inset-bottom));">
         <div id="joystickBase" class="relative w-32 h-32 rounded-full bg-zinc-800/40 border-2 border-zinc-600/60 backdrop-blur-sm flex items-center justify-center opacity-85">
             <div id="joystickStick" class="absolute w-14 h-14 rounded-full bg-amber-500/90 border-2 border-amber-200 shadow-lg transition-transform duration-75"></div>
         </div>
@@ -145,7 +149,7 @@
         <div id="overlayCard" class="bg-zinc-900 border-2 border-amber-500/40 rounded-3xl max-w-lg w-full p-6 sm:p-8 text-center shadow-2xl neon-border-gold">
             <div class="flex items-center justify-between mb-3">
                 <div class="px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold uppercase tracking-widest">
-                    3D Мультиплеер (Vercel P2P)
+                    3D КООПЕРАТИВ (WebSocket)
                 </div>
                 <select id="langSelect" onchange="game.changeLanguage(this.value)" class="bg-zinc-950 border border-zinc-700 rounded-xl px-2.5 py-1 text-xs font-bold text-amber-300 focus:outline-none">
                     <option value="ru" selected>🇷🇺 Русский</option>
@@ -169,6 +173,12 @@
                     <input id="roomCodeInput" type="text" value="CASINO777" maxlength="12"
                         class="w-full px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-700 focus:border-sky-400 focus:outline-none font-mono-num font-bold text-sky-300 text-sm uppercase" />
                 </div>
+            </div>
+            <div class="mb-4 text-left">
+                <label class="block text-[11px] uppercase tracking-wider text-zinc-400 font-bold mb-1">WebSocket сервер (для игры через интернет):</label>
+                <input id="wsServerInput" type="url" placeholder="wss://your-casino-server.example" 
+                    class="w-full px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-700 focus:border-emerald-400 focus:outline-none font-mono-num text-xs text-emerald-300" />
+                <p class="text-[10px] text-zinc-500 mt-1">Оставь пустым для локального режима. Для интернета вставь адрес своего сервера.</p>
             </div>
             <button id="btnStartGame" onclick="game.startNewGame()"
                 class="btn-casino w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-zinc-950 font-black text-base sm:text-lg uppercase tracking-wider">
@@ -215,6 +225,10 @@ window.mpSync = {
     localPeers: {},
     peer: null,
     connections: [],
+    socket: null,
+    socketUrl: '',
+    applyingRemoteAction: false,
+    currentActionSeed: 0,
 
     joinRoom(roomCode) {
         this.roomCode = (roomCode || 'CASINO777').toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
@@ -235,8 +249,65 @@ window.mpSync = {
             }
         } catch (_) {}
 
+        const wsInput = document.getElementById('wsServerInput');
+        this.socketUrl = (wsInput && wsInput.value || '').trim();
+        this.connectWebSocket();
+        // Старые способы оставлены как запасной вариант для уже настроенных Firebase/P2P-комнат.
         this.initPeerJS();
         this.connectFirestore(this.roomCode);
+    },
+
+    connectWebSocket() {
+        if (!this.socketUrl) return;
+        if (!/^wss?:\/\//i.test(this.socketUrl)) {
+            if (window.game) window.game.showToast('Адрес сервера должен начинаться с ws:// или wss://', 'red');
+            return;
+        }
+        try {
+            if (this.socket) this.socket.close();
+            const ws = new WebSocket(this.socketUrl);
+            this.socket = ws;
+            ws.addEventListener('open', () => {
+                ws.send(JSON.stringify({ type: 'join', room: this.roomCode, uid: myUid, name: window.game?.playerName || 'PLAYER' }));
+                if (window.game) window.game.showToast('🌐 Подключено к серверу комнаты!', 'green');
+            });
+            ws.addEventListener('message', (event) => {
+                let msg;
+                try { msg = JSON.parse(event.data); } catch (_) { return; }
+                if (!msg || msg.uid === myUid) return;
+                if (msg.type === 'state') {
+                    this.localPeers[msg.uid] = { ...msg.state, updatedAt: Date.now() };
+                    this.flushLocalPeers();
+                } else if (msg.type === 'machineAction' && window.game) {
+                    window.game.applyRemoteMachineAction(msg.machineId, msg.actionIndex, msg.seed);
+                } else if (msg.type === 'presence') {
+                    const count = Number(msg.count) || 1;
+                    const el = document.getElementById('hudOnlineCount');
+                    if (el) el.textContent = `${count} ${window.game?.lang === 'en' ? 'players' : 'игрок(а)'}`;
+                }
+            });
+            ws.addEventListener('close', () => {
+                if (this.socket === ws && window.game?.state === 'PLAYING') {
+                    window.game.showToast('Соединение с сервером закрыто', 'amber');
+                }
+            });
+            ws.addEventListener('error', () => {
+                if (window.game) window.game.showToast('Не удалось подключиться к WebSocket-серверу', 'red');
+            });
+        } catch (err) {
+            console.warn('WebSocket connection failed:', err);
+        }
+    },
+
+    sendPacket(packet) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            try { this.socket.send(JSON.stringify({ ...packet, uid: myUid, room: this.roomCode })); } catch (_) {}
+        }
+    },
+
+    sendMachineAction(machineId, actionIndex, seed) {
+        if (this.applyingRemoteAction) return;
+        this.sendPacket({ type: 'machineAction', machineId, actionIndex, seed });
     },
 
     connectFirestore(expectedRoom) {
@@ -335,6 +406,7 @@ window.mpSync = {
         if (this.bc) {
             try { this.bc.postMessage({ type: 'state', uid: myUid, state: payload }); } catch (_) {}
         }
+        this.sendPacket({ type: 'state', state: payload });
         if (this.connections.length > 0) {
             const pkt = { type: 'state', uid: myUid, state: payload };
             this.connections.forEach(c => { if (c.open) { try { c.send(pkt); } catch (_) {} } });
@@ -444,6 +516,56 @@ class SoundEngine {
 }
 const sound = new SoundEngine();
 
+// ---------- Полноэкранный режим ----------
+function toggleFullscreen(silent) {
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fsEl) {
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exit) { try { const r = exit.call(document); if (r && r.catch) r.catch(() => {}); } catch (_) {} }
+        return;
+    }
+    const root = document.documentElement;
+    const req = root.requestFullscreen || root.webkitRequestFullscreen;
+    if (!req) {
+        if (!silent && window.game) window.game.showToast('Полный экран тут недоступен. На iPhone: «Поделиться → На экран Домой».', 'amber');
+        return;
+    }
+    try {
+        const r = req.call(root, { navigationUI: 'hide' });
+        if (r && r.then) {
+            r.then(() => {
+                try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {}); } catch (_) {}
+            }).catch(() => {});
+        }
+    } catch (_) {}
+}
+function toggleFullscreenIfNeeded() {
+    if (!(document.fullscreenElement || document.webkitFullscreenElement)) toggleFullscreen(true);
+}
+function onFullscreenChange() {
+    const on = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    const btn = document.getElementById('btnFullscreen');
+    if (btn) btn.textContent = on ? '🗗' : '⛶';
+    if (window.game) setTimeout(() => window.game.onResize(), 150);
+}
+document.addEventListener('fullscreenchange', onFullscreenChange);
+document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+// ---------- Детерминированный ГСЧ (чтобы у всех в комнате были одинаковые автоматы) ----------
+function hashSeed(str) {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    return h;
+}
+function mulberry32(a) {
+    return function () {
+        a |= 0; a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
 class FirstPersonInput {
     constructor() {
         this.keys = {};
@@ -453,6 +575,11 @@ class FirstPersonInput {
         this.joystickX = 0;
         this.joystickY = 0;
         this.touchId = null;
+        // Чувствительность (можно крутить): рад на пиксель
+        this.sensMouse = 0.0036;
+        this.sensTouch = 0.0068;
+        this.joyRadius = 38;      // чем меньше, тем быстрее джойстик доходит до полной скорости
+        this.joyDeadzone = 0.06;
 
         document.addEventListener('pointerlockchange', () => {
             const container = document.getElementById('threeContainer');
@@ -476,6 +603,7 @@ class FirstPersonInput {
         const container = document.getElementById('threeContainer');
         if (container) {
             container.addEventListener('pointerdown', (e) => {
+                if (e.pointerType === 'touch') return;
                 if (!window.game || window.game.state !== 'PLAYING' || window.game.activeModal) return;
                 sound.init();
                 if (!isTouchDevice) this.lockPointer();
@@ -484,12 +612,47 @@ class FirstPersonInput {
         }
 
         window.addEventListener('pointermove', (e) => {
+            if (e.pointerType === 'touch') return; // пальцы обрабатываются отдельно ниже
             if (!window.game || window.game.state !== 'PLAYING' || window.game.activeModal) return;
             if (this.isLocked || isTouchDevice) {
-                this.yaw -= (e.movementX || 0) * 0.0024;
-                this.pitch = Math.max(-0.72, Math.min(0.72, this.pitch - (e.movementY || 0) * 0.0022));
+                this.yaw -= (e.movementX || 0) * this.sensMouse;
+                this.pitch = Math.max(-0.72, Math.min(0.72, this.pitch - (e.movementY || 0) * this.sensMouse * 0.92));
             }
         });
+
+        if (isTouchDevice && container) {
+            // Обзор пальцем (отдельный палец, не джойстик) + короткий тап = нажать кнопку в центре прицела
+            let lookId = null, lastX = 0, lastY = 0, moved = 0, startT = 0;
+            const gameReady = () => window.game && window.game.state === 'PLAYING' && !window.game.activeModal;
+            container.addEventListener('touchstart', (e) => {
+                if (lookId !== null || !gameReady()) return;
+                const t = e.changedTouches[0];
+                lookId = t.identifier; lastX = t.clientX; lastY = t.clientY; moved = 0; startT = performance.now();
+                sound.init();
+            }, { passive: true });
+            container.addEventListener('touchmove', (e) => {
+                if (lookId === null || !gameReady()) return;
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    const t = e.changedTouches[i];
+                    if (t.identifier !== lookId) continue;
+                    const dx = t.clientX - lastX, dy = t.clientY - lastY;
+                    lastX = t.clientX; lastY = t.clientY;
+                    moved += Math.abs(dx) + Math.abs(dy);
+                    this.yaw -= dx * this.sensTouch;
+                    this.pitch = Math.max(-0.72, Math.min(0.72, this.pitch - dy * this.sensTouch * 0.92));
+                }
+            }, { passive: true });
+            const endLook = (e) => {
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    if (e.changedTouches[i].identifier !== lookId) continue;
+                    const isTap = e.type === 'touchend' && moved < 14 && (performance.now() - startT) < 350;
+                    lookId = null;
+                    if (isTap && gameReady()) window.game.handle3DMachineCenterClick();
+                }
+            };
+            container.addEventListener('touchend', endLook, { passive: true });
+            container.addEventListener('touchcancel', endLook, { passive: true });
+        }
 
         if (isTouchDevice) {
             const jsArea = document.getElementById('mobileJoystickArea');
@@ -529,10 +692,12 @@ class FirstPersonInput {
         const rect = base.getBoundingClientRect();
         const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
         let dx = clientX - cx, dy = clientY - cy;
-        const dist = Math.hypot(dx, dy), maxR = 48;
+        const dist = Math.hypot(dx, dy), maxR = this.joyRadius;
         if (dist > maxR) { dx = (dx / dist) * maxR; dy = (dy / dist) * maxR; }
         stickEl.style.transform = `translate(${dx}px, ${dy}px)`;
-        this.joystickX = dx / maxR; this.joystickY = dy / maxR;
+        let jx = dx / maxR, jy = dy / maxR;
+        if (Math.hypot(jx, jy) < this.joyDeadzone) { jx = 0; jy = 0; }
+        this.joystickX = jx; this.joystickY = jy;
     }
 
     lockPointer() {
@@ -964,6 +1129,7 @@ class Casino3DGame {
 
     startNewGame() {
         sound.init(); sound.click();
+        if (isTouchDevice) toggleFullscreenIfNeeded();
         const nameInput = document.getElementById('playerNameInput');
         const roomInput = document.getElementById('roomCodeInput');
         this.playerName = (nameInput && nameInput.value.trim() ? nameInput.value.trim() : 'PILOT_DASTR').toUpperCase().slice(0, 16);
@@ -1011,7 +1177,13 @@ class Casino3DGame {
             { id: 'elevator', type: 'elevator', x: -7.5, z: -8.6, ry: 0, color: '#3b82f6', hexColor: 0x3b82f6, icon: '🛗', name: this.lang === 'ru' ? 'Лифт казино' : 'Casino Elevator', subtitle: this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors} из 3` : `Unlocked floors: ${this.unlockedFloors} of 3` },
             { id: 'dealer_npc', type: 'dealer', x: 7.5, z: -8.2, ry: 0, color: '#10b981', hexColor: 0x10b981, icon: '🕵️‍♂️', name: this.lang === 'ru' ? 'Ростовщик «Шрам»' : 'Loan Shark', subtitle: this.lang === 'ru' ? 'Чёрный рынок талисманов' : 'Black market talismans' }
         ];
-        const shuffled = [...ALL_GAMES_POOL].sort(() => Math.random() - 0.5);
+        // Автоматы зависят только от кода комнаты и этажа -> у всех игроков комнаты они одинаковые
+        const rng = mulberry32(hashSeed(`${this.roomCode}|floor${floor}`));
+        const shuffled = [...ALL_GAMES_POOL];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
         const positions = [
             { x: -6.0, z: -2.2, ry: 0.25 },
             { x: 0, z: -3.2, ry: 0 },
@@ -1019,7 +1191,7 @@ class Casino3DGame {
         ];
         const placed = shuffled.slice(0, 3).map((machine, idx) => ({
             ...machine,
-            id: `${machine.type}_f${floor}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+            id: `${machine.type}_f${floor}_${idx}`,
             x: positions[idx].x,
             z: positions[idx].z,
             ry: positions[idx].ry
@@ -1265,7 +1437,24 @@ class Casino3DGame {
 
         const buttons = [];
         const addBtn = (label, bg, fg, x, z, w, d, cb, parentObj = deck) => {
-            const btn = this.create3DButton(label, bg, fg, w, d, cb);
+            const actionIndex = buttons.length;
+            const btn = this.create3DButton(label, bg, fg, w, d, () => {
+                const remote = !!(window.mpSync && window.mpSync.applyingRemoteAction);
+                const seed = remote ? window.mpSync.currentActionSeed : (Math.random() * 4294967296) >>> 0;
+                const originalRandom = Math.random;
+                let randomState = seed >>> 0;
+                Math.random = () => {
+                    randomState = (randomState + 0x6D2B79F5) | 0;
+                    let t = randomState;
+                    t = Math.imul(t ^ (t >>> 15), t | 1);
+                    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+                };
+                try { cb(); } finally { Math.random = originalRandom; }
+                if (!remote && window.mpSync) window.mpSync.sendMachineAction(def.id, actionIndex, seed);
+            });
+            btn.userData.machineId = def.id;
+            btn.userData.actionIndex = actionIndex;
             btn.position.set(x, parentObj === terminalDesk ? 0.11 : 0.13, z); parentObj.add(btn);
             buttons.push(btn);
             this.allInteractiveButtons.push(btn);
@@ -1923,6 +2112,23 @@ class Casino3DGame {
 
         mState.updateScreen();
         def.machine3D = mState;
+    }
+
+    applyRemoteMachineAction(machineId, actionIndex, seed = 0) {
+        if (!Number.isInteger(actionIndex) || actionIndex < 0) return;
+        const button = this.allInteractiveButtons.find(obj =>
+            obj.userData && obj.userData.is3DButton &&
+            obj.userData.machineId === machineId &&
+            obj.userData.actionIndex === actionIndex
+        );
+        if (!button || typeof button.userData.onClick !== 'function') return;
+        window.mpSync.applyingRemoteAction = true;
+        window.mpSync.currentActionSeed = Number(seed) >>> 0;
+        try { button.userData.onClick(); }
+        finally {
+            window.mpSync.applyingRemoteAction = false;
+            window.mpSync.currentActionSeed = 0;
+        }
     }
 
     handle3DMachineCenterClick() {
