@@ -865,7 +865,7 @@ class Casino3DGame {
         this.remoteBatEvent = null;
         this.batEventCounter = 0;
         this.lastVisitorSnapshotAt = 0;
-        this.playerKnockback = { x: 0, z: 0, time: 0 };
+        this.playerKnockback = { x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0 };
 
         this.handBatGroup = new THREE.Group();
         const batH = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 0.35, 10), new THREE.MeshStandardMaterial({ color: 0x27272a }));
@@ -1227,6 +1227,7 @@ class Casino3DGame {
         this.player.z = 7.0;
         this.player.y = 1.65;
         this.player.bobPhase = 0;
+        if (this.playerKnockback) Object.assign(this.playerKnockback, { x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0 });
         input.yaw = 0;
         input.pitch = -0.04;
         if (this.camera) {
@@ -2354,9 +2355,11 @@ class Casino3DGame {
                     const dx = this.player.x - (Number(event.x) || 0);
                     const dz = this.player.z - (Number(event.z) || 0);
                     const d = Math.max(0.001, Math.hypot(dx, dz));
-                    this.playerKnockback.x = dx / d * 4.2;
-                    this.playerKnockback.z = dz / d * 4.2;
-                    this.playerKnockback.time = 0.22;
+                    // A proper cartoon knockback: strong horizontal impulse, a hop and a quick tumble.
+                    this.playerKnockback.x = dx / d * 8.8;
+                    this.playerKnockback.z = dz / d * 8.8;
+                    this.playerKnockback.vy = 5.8;
+                    this.playerKnockback.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 10.5;
                     sound.batHit();
                 }
             }
@@ -2399,13 +2402,25 @@ class Casino3DGame {
             return;
         }
 
-        if (this.playerKnockback.time > 0) {
-            const kdt = Math.min(dt, this.playerKnockback.time);
-            const nx = Math.max(-10.8, Math.min(10.8, this.player.x + this.playerKnockback.x * kdt));
-            const nz = Math.max(-8.8, Math.min(8.8, this.player.z + this.playerKnockback.z * kdt));
-            if (!this.checkCollision3D(nx, this.player.z)) this.player.x = nx;
-            if (!this.checkCollision3D(this.player.x, nz)) this.player.z = nz;
-            this.playerKnockback.time = Math.max(0, this.playerKnockback.time - dt);
+        // Integrate the victim's knockback independently from normal WASD movement.
+        // The remote position is still published through multiplayer state sync.
+        const kb = this.playerKnockback;
+        if (Math.abs(kb.x) > 0.03 || Math.abs(kb.z) > 0.03 || kb.height > 0 || kb.vy > 0) {
+            const nx = Math.max(-10.8, Math.min(10.8, this.player.x + kb.x * dt));
+            const nz = Math.max(-8.8, Math.min(8.8, this.player.z + kb.z * dt));
+            if (!this.checkCollision3D(nx, this.player.z)) this.player.x = nx; else kb.x *= -0.22;
+            if (!this.checkCollision3D(this.player.x, nz)) this.player.z = nz; else kb.z *= -0.22;
+            const drag = Math.exp(-3.2 * dt);
+            kb.x *= drag; kb.z *= drag;
+            kb.vy -= 14.5 * dt;
+            kb.height += kb.vy * dt;
+            if (kb.height <= 0) { kb.height = 0; kb.vy = 0; }
+            kb.roll += kb.rollVelocity * dt;
+            kb.rollVelocity *= Math.exp(-(kb.height > 0 ? 2.8 : 10) * dt);
+            if (kb.height === 0) kb.roll *= Math.exp(-7 * dt);
+            if (Math.abs(kb.roll) < 0.015 && Math.abs(kb.rollVelocity) < 0.03) {
+                kb.roll = 0; kb.rollVelocity = 0;
+            }
         }
 
         if (!this.activeModal) {
@@ -2428,8 +2443,8 @@ class Casino3DGame {
         }
 
         const headBob = Math.sin(this.player.bobPhase) * 0.045;
-        this.camera.position.set(this.player.x, this.player.y + headBob, this.player.z);
-        this.camera.rotation.y = input.yaw; this.camera.rotation.x = input.pitch; this.camera.rotation.z = 0;
+        this.camera.position.set(this.player.x, this.player.y + this.playerKnockback.height + headBob, this.player.z);
+        this.camera.rotation.y = input.yaw; this.camera.rotation.x = input.pitch; this.camera.rotation.z = this.playerKnockback.roll;
 
         if (window.mpSync) {
             window.mpSync.pushMyState({ name: this.playerName, x: this.player.x, z: this.player.z, yaw: input.yaw, floor: this.currentFloor, hasBat: this.hasBat, batEvent: this.remoteBatEvent });
