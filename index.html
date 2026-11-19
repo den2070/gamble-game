@@ -22,16 +22,6 @@
         .btn-casino:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
         @keyframes pulseFast { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.04); } }
         .timer-danger { animation: pulseFast 0.7s infinite; color: #ef4444 !important; }
-        #mobileMenuPanel { display:none; position:fixed; right:12px; top:62px; z-index:45; padding:10px; min-width:190px; background:rgba(9,9,11,.96); border:1px solid #52525b; border-radius:14px; box-shadow:0 12px 35px #0009; }
-        #mobileMenuPanel.open { display:flex; flex-direction:column; gap:8px; }
-        @media (max-width: 767px) {
-          #hudTop { padding:7px; gap:5px; }
-          #hudTop #hudFloor, #hudTop #hudOnlineCount, #hudTop #hudTarget, #hudTop #hudTimer, #hudTop #hudQuotaBar, #hudTop #btnSubmitQuota, #hudTop #btnBatHud, #hudTop #btnFullscreen, #hudTop #btnAudio { display:none !important; }
-          #hudTop > div:first-child > div { padding:5px 9px; }
-          #hudTop > div:nth-child(2) > div { padding:5px 9px; }
-          #hudTop > div:nth-child(2) > div > div:first-child > div:nth-child(n+2) { display:none; }
-          #mobileMenuToggle { display:flex !important; }
-        }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: #18181b; }
         ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 3px; }
@@ -109,17 +99,6 @@
                 🔊
             </button>
         </div>
-    </div>
-
-    <button id="mobileMenuToggle" onclick="document.getElementById('mobileMenuPanel').classList.toggle('open')" class="hidden fixed top-3 right-3 z-40 w-11 h-11 rounded-xl bg-zinc-900/95 border border-zinc-600 text-white text-xl items-center justify-center shadow-xl">☰</button>
-    <div id="mobileMenuPanel">
-      <div class="text-xs font-black text-zinc-400 uppercase px-1">Меню игры</div>
-      <div class="text-sm text-zinc-200" id="mobileMenuStats">Цель и время — в меню</div>
-      <button onclick="game.tryCompleteNight();document.getElementById('mobileMenuPanel').classList.remove('open')" class="btn-casino rounded-lg px-3 py-2 bg-emerald-600 text-white font-bold">Сдать долю</button>
-      <button onclick="game.swingBat();document.getElementById('mobileMenuPanel').classList.remove('open')" class="btn-casino rounded-lg px-3 py-2 bg-amber-500 text-black font-bold">🏏 Бита</button>
-      <button onclick="game.surrenderGame();document.getElementById('mobileMenuPanel').classList.remove('open')" class="rounded-lg px-3 py-2 bg-red-700 text-white font-bold">Сдаться</button>
-      <button onclick="toggleFullscreen();document.getElementById('mobileMenuPanel').classList.remove('open')" class="rounded-lg px-3 py-2 bg-zinc-800 text-white">⛶ Полный экран</button>
-      <button onclick="sound.toggleMute();document.getElementById('mobileMenuPanel').classList.remove('open')" class="rounded-lg px-3 py-2 bg-zinc-800 text-white">🔊 Звук</button>
     </div>
 
     <!-- Мобильный джойстик слева -->
@@ -242,8 +221,6 @@ window.mpSync = {
     roomCode: 'CASINO777',
     unsubscribePlayers: null,
     lastSyncTime: 0,
-    hostUid: null,
-    lastWorldSync: 0,
     bc: null,
     localPeers: {},
     peer: null,
@@ -298,20 +275,7 @@ window.mpSync = {
                 let msg;
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
                 if (!msg || msg.uid === myUid) return;
-                if (msg.type === 'joined') {
-                    this.hostUid = msg.hostUid || null;
-                    if (msg.sharedState && window.game) window.game.applyServerWorldState(msg.sharedState);
-                } else if (msg.type === 'hostChanged') {
-                    this.hostUid = msg.hostUid || null;
-                } else if (msg.type === 'worldState' && window.game) {
-                    window.game.applyServerWorldState(msg.state);
-                } else if (msg.type === 'visitorState' && window.game) {
-                    window.game.applyVisitorSnapshot(msg.visitors || []);
-                } else if (msg.type === 'batSwing' && window.game) {
-                    window.game.playRemoteBatSwing(msg.uid);
-                } else if (msg.type === 'surrender' && window.game) {
-                    window.game.triggerGameOver(window.game.lang==='ru'?'Напарник сдался.':'Partner surrendered.');
-                } else if (msg.type === 'state') {
+                if (msg.type === 'state') {
                     this.localPeers[msg.uid] = { ...msg.state, updatedAt: Date.now() };
                     this.flushLocalPeers();
                 } else if (msg.type === 'machineAction' && window.game) {
@@ -436,7 +400,6 @@ window.mpSync = {
             z: Number(state.z.toFixed(2)),
             yaw: Number(state.yaw.toFixed(2)),
             floor: state.floor,
-            hasBat: !!window.game?.hasBat,
             updatedAt: now
         };
 
@@ -492,23 +455,6 @@ const FLOOR_CONFIG = {
     2: { name: '2 ЭТАЖ (Игровой зал)', minBet: 50, maxBet: 1500, defaultBet: 50, carpetHex: 0x3b1522, wallHex: 0x1f1016, neonHex: 0xf43f5e },
     3: { name: '3 ЭТАЖ (VIP Пентхаус)', minBet: 250, maxBet: 10000, defaultBet: 250, carpetHex: 0x332612, wallHex: 0x1c170d, neonHex: 0xeab308 }
 };
-
-// Процедурные этажи: конфиг вычисляется по номеру, поэтому у всех игроков
-// одной комнаты один и тот же этаж даже после перезахода.
-function getFloorConfig(floorNum) {
-    const f = Math.max(1, Math.floor(Number(floorNum) || 1));
-    if (FLOOR_CONFIG[f]) return FLOOR_CONFIG[f];
-    const themes = ['Неоновый', 'Кристальный', 'Кибер', 'Лунный', 'Изумрудный', 'Рубиновый', 'Космический', 'Золотой'];
-    const palettes = [
-        [0x102a43, 0x071827, 0x38bdf8], [0x30204f, 0x170d2b, 0xa78bfa],
-        [0x12352b, 0x081d18, 0x34d399], [0x3b1d36, 0x1d0d1b, 0xf472b6],
-        [0x3b2b16, 0x201608, 0xfbbf24], [0x182b3b, 0x0b1722, 0x60a5fa]
-    ];
-    const idx = (f * 7 + Math.floor(f / 3)) % palettes.length;
-    const [carpetHex, wallHex, neonHex] = palettes[idx];
-    const minBet = Math.min(1e12, Math.round(250 * Math.pow(1.42, Math.min(80, f - 3))));
-    return { name: `${f} ЭТАЖ (${themes[(f - 4) % themes.length]} зал)`, minBet, maxBet: Math.min(1e12, minBet * 40), defaultBet: minBet, carpetHex, wallHex, neonHex };
-}
 
 const TALISMANS = [
     { id: 'clover', name: 'Клевер удачи', icon: '🍀', price: 350, desc: 'Повышает шанс выигрыша в слотах.' },
@@ -641,7 +587,14 @@ class FirstPersonInput {
         });
 
         window.addEventListener('keydown', (e) => {
-            if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+            // Always capture movement keys. The player-name INPUT can remain focused
+            // after pressing Start; ignoring keydown while focused made WASD stop working.
+            if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
+                this.keys[e.code] = true;
+                if (window.game && window.game.state === 'PLAYING') e.preventDefault();
+            }
+            const typing = document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA');
+            if (typing) return;
             this.keys[e.code] = true;
             if (window.game && window.game.state === 'PLAYING' && !window.game.activeModal) {
                 if (e.code === 'KeyF' || e.code === 'Space') {
@@ -653,6 +606,7 @@ class FirstPersonInput {
         });
 
         window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+        window.addEventListener('blur', () => { this.keys = {}; });
 
         const container = document.getElementById('threeContainer');
         if (container) {
@@ -803,7 +757,7 @@ class Casino3DGame {
         this.shieldUsedThisNight = false;
         this.hasBat = false;
         this.batSwingTimer = 0;
-        this.player = { x: 0, z: 7.0, y: 1.85, baseSpeed: 6.2, bobPhase: 0 };
+        this.player = { x: 0, z: 6.5, y: 1.65, baseSpeed: 6.2, bobPhase: 0 };
         this.activeModal = null;
         this.lastFrameTime = performance.now();
         this.secondAccumulator = 0;
@@ -1033,7 +987,7 @@ class Casino3DGame {
         this.sceneObjects = []; this.npcs = []; this.batPickupMesh = null; this.dealerRig = null;
         this.allInteractiveButtons = [];
 
-        const cfg = getFloorConfig(floorNum);
+        const cfg = FLOOR_CONFIG[floorNum];
         this.accentLight.color.setHex(cfg.neonHex);
 
         const floorCanvas = document.createElement('canvas'); floorCanvas.width = 256; floorCanvas.height = 256;
@@ -1093,31 +1047,17 @@ class Casino3DGame {
                 liftLight.position.set(0, 2.6, 0);
                 roomGroup.add(liftFloor, liftRoof, backWall, leftWall, rightWall, liftLight);
 
-                // Лифт работает с бесконечной нумерацией: кнопки перемещают
-                // на 1 или 10 этажей относительно текущего.
-                const liftMoves = [
-                    { label: '-10', delta: -10, x: 1.76, y: 1.85, z: -0.48 },
-                    { label: '-1', delta: -1, x: 1.76, y: 1.85, z: 0.42 },
-                    { label: '+1', delta: 1, x: 1.76, y: 1.05, z: -0.48 },
-                    { label: '+10', delta: 10, x: 1.76, y: 1.05, z: 0.42 }
-                ];
-                liftMoves.forEach(({ label, delta, x, y, z }) => {
-                    const target = Math.max(1, Math.min(this.unlockedFloors, this.currentFloor + delta));
-                    const canMove = target !== this.currentFloor;
-                    const sqBtn = this.createSquareButton3D(label, canMove ? '#3b82f6' : '#3f3f46', '#ffffff', 0.48, () => {
-                        const nextTarget = Math.max(1, Math.min(this.unlockedFloors, this.currentFloor + delta));
-                        if (nextTarget !== this.currentFloor) this.startElevatorRide(nextTarget);
-                        else this.showToast(this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors}` : `Unlocked floors: ${this.unlockedFloors}`, 'amber');
+                for (let f = 1; f <= 3; f++) {
+                    const unlocked = f <= this.unlockedFloors;
+                    const btnColor = unlocked ? '#3b82f6' : '#3f3f46';
+                    const sqBtn = this.createSquareButton3D(`${f}`, btnColor, '#ffffff', 0.38, () => {
+                        this.startElevatorRide(f);
                     });
-                    sqBtn.position.set(x, y, z);
+                    sqBtn.position.set(1.76, 1.5, -0.6 + (f - 1) * 0.6);
                     sqBtn.rotation.y = -Math.PI / 2;
                     roomGroup.add(sqBtn);
                     this.allInteractiveButtons.push(sqBtn);
-                });
-                const floorReadout = this.createSignSprite('🛗', `ЭТАЖ ${this.currentFloor} / ${this.unlockedFloors}`, '#60a5fa');
-                floorReadout.position.set(0, 2.45, -1.72);
-                floorReadout.scale.set(1.45, 0.5, 1);
-                roomGroup.add(floorReadout);
+                }
                 group.add(roomGroup);
 
             } else if (def.type === 'dealer') {
@@ -1222,7 +1162,6 @@ class Casino3DGame {
         document.getElementById('mobileBatBtn').classList.add('hidden');
 
         this.buildFloor3D(1);
-        this.buildFloor3D(this.currentFloor);
         this.resetPlayerPosition();
         this.state = 'PLAYING';
         document.getElementById('overlayScreen').classList.add('hidden');
@@ -1233,10 +1172,10 @@ class Casino3DGame {
     }
 
     resetPlayerPosition() {
-        // Spawn in the open central area, away from the elevator shaft and nearby props.
+        // Spawn on the center of the actual floor plane, clear of nearby props.
         this.player.x = 0;
         this.player.z = 7.0;
-        this.player.y = 1.85;
+        this.player.y = 1.65;
         this.player.bobPhase = 0;
         input.yaw = 0;
         input.pitch = -0.04;
@@ -1248,7 +1187,7 @@ class Casino3DGame {
 
     getFloorObjects(floor) {
         const common = [
-            { id: 'elevator', type: 'elevator', x: -7.5, z: -8.6, ry: 0, color: '#3b82f6', hexColor: 0x3b82f6, icon: '🛗', name: this.lang === 'ru' ? 'Лифт казино' : 'Casino Elevator', subtitle: this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors}` : `Unlocked floors: ${this.unlockedFloors}` },
+            { id: 'elevator', type: 'elevator', x: -7.5, z: -8.6, ry: 0, color: '#3b82f6', hexColor: 0x3b82f6, icon: '🛗', name: this.lang === 'ru' ? 'Лифт казино' : 'Casino Elevator', subtitle: this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors} из 3` : `Unlocked floors: ${this.unlockedFloors} of 3` },
             { id: 'dealer_npc', type: 'dealer', x: 7.5, z: -8.2, ry: 0, color: '#10b981', hexColor: 0x10b981, icon: '🕵️‍♂️', name: this.lang === 'ru' ? 'Ростовщик «Шрам»' : 'Loan Shark', subtitle: this.lang === 'ru' ? 'Чёрный рынок талисманов' : 'Black market talismans' }
         ];
         // Автоматы зависят только от кода комнаты и этажа -> у всех игроков комнаты они одинаковые
@@ -1288,51 +1227,8 @@ class Casino3DGame {
         this.showToast(this.lang === 'ru' ? '🏏 Вы подобрали биту!' : '🏏 You picked up the bat!', 'amber');
     }
 
-    applyServerWorldState(st) {
-        if (!st || typeof st !== 'object') return;
-        if (Number.isFinite(st.balance)) this.balance = Math.max(0, Math.round(st.balance));
-        if (Number.isFinite(st.night)) this.night = Math.max(1, Math.floor(st.night));
-        if (Number.isFinite(st.timeLeft)) this.timeLeft = Math.max(0, st.timeLeft);
-        if (Number.isFinite(st.target)) this.target = Math.max(1, Math.round(st.target));
-        const previousUnlocked = this.unlockedFloors;
-        if (Number.isFinite(st.unlockedFloors)) this.unlockedFloors = Math.max(1, Math.floor(st.unlockedFloors));
-        if (this.unlockedFloors > previousUnlocked && this.state === 'PLAYING') this.buildFloor3D(this.currentFloor);
-        this.updateHUD();
-    }
-
-    broadcastWorldState(force = false) {
-        if (!window.mpSync || window.mpSync.hostUid !== myUid) return;
-        const now = performance.now();
-        if (!force && now - window.mpSync.lastWorldSync < 250) return;
-        window.mpSync.lastWorldSync = now;
-        window.mpSync.sendPacket({type:'worldState', state:{balance:this.balance, night:this.night, timeLeft:this.timeLeft, target:this.target, unlockedFloors:this.unlockedFloors}});
-    }
-
-    applyVisitorSnapshot(list) {
-        if (!Array.isArray(list)) return;
-        list.forEach((v, i) => {
-            const npc = this.npcs[i]; if (!npc || !v) return;
-            npc.netTarget = {x:v.x, y:v.y, z:v.z, rx:v.rx, rz:v.rz, yaw:v.yaw, ragdollTimer:v.ragdollTimer};
-        });
-    }
-
-    broadcastVisitorSnapshot() {
-        if (!window.mpSync || window.mpSync.hostUid !== myUid) return;
-        const now = performance.now();
-        if (now - (this.lastVisitorSync || 0) < 100) return;
-        this.lastVisitorSync = now;
-        window.mpSync.sendPacket({type:'visitorState', visitors:this.npcs.map(n=>({x:n.x,y:n.y,z:n.z,rx:n.rx,rz:n.rz,yaw:n.mesh.rotation.y,ragdollTimer:n.ragdollTimer}))});
-    }
-
-    playRemoteBatSwing(uid) {
-        if (uid === myUid) return;
-        this.remoteBatSwingUntil = performance.now() + 380;
-        sound.batSwing();
-    }
-
     swingBat() {
         if (!this.hasBat || this.batSwingTimer > 0 || this.activeModal) return;
-        if (window.mpSync) window.mpSync.sendPacket({type:'batSwing'});
         this.batSwingTimer = 0.38;
         sound.batSwing();
         const fx = -Math.sin(input.yaw), fz = -Math.cos(input.yaw);
@@ -1362,7 +1258,6 @@ class Casino3DGame {
         this.updateHUD();
         const modalBalance = document.getElementById('modalBalance');
         if (modalBalance) modalBalance.textContent = `$${this.balance.toLocaleString()}`;
-        this.broadcastWorldState(true);
         for (const obj of this.sceneObjects) {
             if (obj.machine3D && typeof obj.machine3D.updateScreen === 'function') obj.machine3D.updateScreen();
         }
@@ -1373,7 +1268,6 @@ class Casino3DGame {
             this.shieldUsedThisNight = true;
             this.balance += Math.round(betAmount);
             this.updateHUD();
-            this.broadcastWorldState(true);
             sound.coin();
             this.showToast(this.lang === 'ru' ? `🛡️ Жетон спас $${Math.round(betAmount)}!` : `🛡️ Shield token saved $${Math.round(betAmount)}!`, 'green');
             return true;
@@ -1410,7 +1304,7 @@ class Casino3DGame {
         if (nightEl) nightEl.textContent = `${english ? 'NIGHT' : 'НОЧЬ'} ${this.night}`;
         if (floorEl) {
             const names = english ? { 1: 'FLOOR 1 (Basement)', 2: 'FLOOR 2 (Gaming Hall)', 3: 'FLOOR 3 (VIP Penthouse)' } : null;
-            floorEl.textContent = names && names[this.currentFloor] ? names[this.currentFloor] : getFloorConfig(this.currentFloor).name;
+            floorEl.textContent = names ? names[this.currentFloor] : FLOOR_CONFIG[this.currentFloor].name;
         }
         if (balanceEl) balanceEl.textContent = `$${this.balance.toLocaleString()}`;
         if (targetEl) targetEl.textContent = `$${this.target.toLocaleString()}`;
@@ -1439,12 +1333,6 @@ class Casino3DGame {
         }
     }
 
-    surrenderGame() {
-        if (this.state !== 'PLAYING') return;
-        if (window.mpSync) window.mpSync.sendPacket({type:'surrender'});
-        this.triggerGameOver(this.lang==='ru'?'Вы сдались.':'You surrendered.');
-    }
-
     tryCompleteNight() {
         if (this.state !== 'PLAYING' || this.balance < this.target) return;
         this.closeModal(false);
@@ -1458,7 +1346,7 @@ class Casino3DGame {
         input.unlockPointer();
         const nextNight = this.night + 1;
         const nextTarget = this.getTargetForNight(nextNight);
-        const newUnlocked = Math.max(this.unlockedFloors, Math.ceil(nextNight / 2));
+        const newUnlocked = Math.min(3, Math.ceil(nextNight / 2));
         const unlockedNewFloor = newUnlocked > this.unlockedFloors;
         this.unlockedFloors = newUnlocked;
         const overlay = document.getElementById('overlayScreen');
@@ -1486,7 +1374,6 @@ class Casino3DGame {
         this.nightDuration = 300 + (this.perks.vip_watch ? 45 : 0);
         this.timeLeft = this.nightDuration;
         this.secondAccumulator = 0;
-        this.buildFloor3D(this.currentFloor);
         this.resetPlayerPosition();
         this.state = 'PLAYING';
         document.getElementById('overlayScreen').classList.add('hidden');
@@ -1556,7 +1443,7 @@ class Casino3DGame {
     }
 
     setupDiegeticMachine3D(def, group, deck, terminalDesk) {
-        const cfg = getFloorConfig(this.currentFloor);
+        const cfg = FLOOR_CONFIG[this.currentFloor];
         const scr = this.create3DScreenTexture(512, 320);
         const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.42, 0.88), new THREE.MeshBasicMaterial({ map: scr.tex }));
         screenMesh.position.set(0, 1.66, 0.635); group.add(screenMesh);
@@ -2100,18 +1987,16 @@ class Casino3DGame {
             }, deck);
 
         } else if (def.type === 'wheel') {
-            const sectorDefs = [
-                { mult: 0.1, count: 5, color: '#52525b' },
-                { mult: 0.5, count: 5, color: '#3f3f46' },
-                { mult: 1, count: 5, color: '#eab308' },
-                { mult: 1.5, count: 20, color: '#16a34a' },
-                { mult: 2, count: 3, color: '#f97316' },
-                { mult: 3, count: 3, color: '#ec4899' },
-                { mult: 5, count: 3, color: '#8b5cf6' },
-                { mult: 10, count: 3, color: '#3b82f6' },
-                { mult: 25, count: 3, color: '#ef4444' }
+            const sectors = [
+                { mult: 0.1, color: '#52525b', label: '0.1x' },
+                { mult: 0.5, color: '#3f3f46', label: '0.5x' },
+                { mult: 1, color: '#eab308', label: '1x' },
+                { mult: 2, color: '#f97316', label: '2x' },
+                { mult: 3, color: '#ec4899', label: '3x' },
+                { mult: 5, color: '#8b5cf6', label: '5x' },
+                { mult: 10, color: '#3b82f6', label: '10x' },
+                { mult: 25, color: '#ef4444', label: '25x' }
             ];
-            const sectors = sectorDefs.flatMap(d => Array.from({length:d.count}, () => ({...d, label:`${d.mult}x`})));
             let wheelAngle = 0;
             let isSpinning = false;
 
@@ -2309,32 +2194,24 @@ class Casino3DGame {
         this.closeModal(); this.buildFloor3D(floorNum);
         this.resetPlayerPosition();
         this.updateHUD();
-        this.showToast(this.lang === 'ru' ? `🛗 Вы на этаже: ${getFloorConfig(floorNum).name}` : `🛗 Floor: ${getFloorConfig(floorNum).name}`, 'amber');
+        this.showToast(this.lang === 'ru' ? `🛗 Вы на этаже: ${FLOOR_CONFIG[floorNum].name}` : `🛗 Floor: ${FLOOR_CONFIG[floorNum].name}`, 'amber');
     }
 
     syncRemotePlayers(remoteData) {
         this.remotePlayers = remoteData || {};
-        const alive = new Set();
+        while (this.remotePlayersGroup.children.length > 0) {
+            this.remotePlayersGroup.remove(this.remotePlayersGroup.children[0]);
+        }
         for (const [uid, p] of Object.entries(this.remotePlayers)) {
             if (p.floor !== this.currentFloor) continue;
-            alive.add(uid);
-            let avatar = this.remoteAvatarMeshes[uid];
-            if (!avatar) {
-                const rig = this.createGoofyCharacterMesh(0x0284c7, 0xa3b18a, 0xfacc15);
-                avatar = rig.root;
-                const label = this.createSignSprite('👤', p.name || 'ДРУГ', '#38bdf8');
-                label.scale.set(1.5, 0.48, 1); label.position.set(0, 2.35, 0); avatar.add(label);
-                const bat = new THREE.Group();
-                const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.045,0.055,0.48,8),new THREE.MeshStandardMaterial({color:0x78350f,roughness:.7}));
-                const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.075,0.11,0.72,10),new THREE.MeshStandardMaterial({color:0xd6a45e,roughness:.55}));
-                barrel.position.y=.48; bat.add(handle,barrel); bat.position.set(.42,1.05,-.05); bat.rotation.z=-.55; bat.visible=false; avatar.add(bat); avatar.userData.remoteBat=bat;
-                this.remotePlayersGroup.add(avatar); this.remoteAvatarMeshes[uid]=avatar;
-            }
-            avatar.userData.netTarget = {x:p.x||0,z:p.z||0,yaw:(p.yaw||0)+Math.PI,hasBat:!!p.hasBat};
-            if (avatar.userData.remoteBat) avatar.userData.remoteBat.visible=!!p.hasBat;
-        }
-        for (const [uid, avatar] of Object.entries(this.remoteAvatarMeshes)) {
-            if (!alive.has(uid)) { this.remotePlayersGroup.remove(avatar); delete this.remoteAvatarMeshes[uid]; }
+            const rig = this.createGoofyCharacterMesh(0x0284c7, 0xa3b18a, 0xfacc15);
+            const avatar = rig.root;
+            const label = this.createSignSprite('👤', p.name || 'ДРУГ', '#38bdf8');
+            label.scale.set(1.5, 0.48, 1); label.position.set(0, 2.35, 0);
+            avatar.add(label);
+            avatar.position.set(p.x || 0, 0, p.z || 0);
+            avatar.rotation.y = (p.yaw || 0) + Math.PI;
+            this.remotePlayersGroup.add(avatar);
         }
     }
 
@@ -2396,12 +2273,6 @@ class Casino3DGame {
         const headBob = Math.sin(this.player.bobPhase) * 0.045;
         this.camera.position.set(this.player.x, this.player.y + headBob, this.player.z);
         this.camera.rotation.y = input.yaw; this.camera.rotation.x = input.pitch; this.camera.rotation.z = 0;
-        for (const avatar of Object.values(this.remoteAvatarMeshes || {})) {
-            const t=avatar.userData.netTarget; if(!t) continue;
-            const k=1-Math.exp(-dt*11); avatar.position.x+=(t.x-avatar.position.x)*k; avatar.position.z+=(t.z-avatar.position.z)*k;
-            let dy=((t.yaw-avatar.rotation.y+Math.PI*3)%(Math.PI*2))-Math.PI; avatar.rotation.y+=dy*k;
-            const bat=avatar.userData.remoteBat; if(bat && performance.now()<(this.remoteBatSwingUntil||0)) { const a=1-(this.remoteBatSwingUntil-performance.now())/380; bat.rotation.x=-Math.sin(a*Math.PI)*1.2; } else if(bat) bat.rotation.x=0;
-        }
 
         if (window.mpSync) {
             window.mpSync.pushMyState({ name: this.playerName, x: this.player.x, z: this.player.z, yaw: input.yaw, floor: this.currentFloor });
@@ -2420,18 +2291,7 @@ class Casino3DGame {
             }
         }
 
-        this.broadcastWorldState();
-        this.broadcastVisitorSnapshot();
         for (const npc of this.npcs) {
-            if (npc.netTarget && (!window.mpSync || window.mpSync.hostUid !== myUid)) {
-                const k = 1 - Math.exp(-dt * 12), t = npc.netTarget;
-                npc.x += (t.x - npc.x) * k; npc.y += (t.y - npc.y) * k; npc.z += (t.z - npc.z) * k;
-                npc.rx += ((t.rx||0) - npc.rx) * k; npc.rz += ((t.rz||0) - npc.rz) * k;
-                npc.mesh.rotation.y += (t.yaw - npc.mesh.rotation.y) * k;
-                npc.mesh.position.set(npc.x,npc.y,npc.z); npc.mesh.rotation.x=npc.rx; npc.mesh.rotation.z=npc.rz;
-                npc.ragdollTimer = t.ragdollTimer || 0;
-                continue;
-            }
             if (npc.ragdollTimer > 0) {
                 npc.ragdollTimer -= dt; npc.vy -= 16.5 * dt;
                 npc.x += npc.vx * dt; npc.y += npc.vy * dt; npc.z += npc.vz * dt;
