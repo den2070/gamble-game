@@ -1300,7 +1300,26 @@ class Casino3DGame {
             sound.batHit();
             this.batEventCounter++;
             this.remoteBatEvent = { id: `${Date.now()}_${this.batEventCounter}`, targetUid: hitPlayerUid, x: this.player.x, z: this.player.z, yaw: input.yaw, floor: this.currentFloor };
-            this.showToast(this.lang === 'ru' ? '🏏 БАМ! Попадание по игроку!' : '🏏 WHAM! Player hit!', 'amber');
+            // Start a local third-person hit reaction immediately, so the attacker
+            // sees the other player's body fly and tumble instead of only the toast.
+            const hitAvatar = this.remoteAvatarMeshes[hitPlayerUid];
+            if (hitAvatar) {
+                const ud = hitAvatar.userData;
+                const dx = ud.targetX - this.player.x;
+                const dz = ud.targetZ - this.player.z;
+                const d = Math.max(0.001, Math.hypot(dx, dz));
+                ud.hitVx = (dx / d) * 3.4;
+                ud.hitVz = (dz / d) * 3.4;
+                ud.hitOffsetX = ud.hitOffsetX || 0;
+                ud.hitOffsetZ = ud.hitOffsetZ || 0;
+                ud.hitVy = 6.8;
+                ud.hitHeight = 0;
+                ud.hitPitch = 0;
+                ud.hitRoll = 0;
+                ud.hitPitchVelocity = (Math.random() < 0.5 ? -1 : 1) * 8.5;
+                ud.hitRollVelocity = (Math.random() < 0.5 ? -1 : 1) * 13.5;
+            }
+            this.showToast(this.lang === 'ru' ? '🏏 БАМ! Игрок улетел!' : '🏏 WHAM! Player launched!', 'amber');
         }
         for (const npc of this.npcs) {
             const dx = npc.x - this.player.x;
@@ -2336,6 +2355,16 @@ class Casino3DGame {
                 avatar.userData.lastBatEventId = null;
                 avatar.userData.swingTime = 0;
                 avatar.userData.floor = p.floor;
+                avatar.userData.hitVx = 0;
+                avatar.userData.hitVz = 0;
+                avatar.userData.hitOffsetX = 0;
+                avatar.userData.hitOffsetZ = 0;
+                avatar.userData.hitVy = 0;
+                avatar.userData.hitHeight = 0;
+                avatar.userData.hitPitch = 0;
+                avatar.userData.hitRoll = 0;
+                avatar.userData.hitPitchVelocity = 0;
+                avatar.userData.hitRollVelocity = 0;
                 avatar.position.set(avatar.userData.targetX, 0, avatar.userData.targetZ);
                 avatar.rotation.y = avatar.userData.targetYaw;
                 this.remotePlayersGroup.add(avatar);
@@ -2356,10 +2385,10 @@ class Casino3DGame {
                     const dz = this.player.z - (Number(event.z) || 0);
                     const d = Math.max(0.001, Math.hypot(dx, dz));
                     // A proper cartoon knockback: strong horizontal impulse, a hop and a quick tumble.
-                    this.playerKnockback.x = dx / d * 8.8;
-                    this.playerKnockback.z = dz / d * 8.8;
-                    this.playerKnockback.vy = 5.8;
-                    this.playerKnockback.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 10.5;
+                    this.playerKnockback.x = dx / d * 12.5;
+                    this.playerKnockback.z = dz / d * 12.5;
+                    this.playerKnockback.vy = 7.6;
+                    this.playerKnockback.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 14.0;
                     sound.batHit();
                 }
             }
@@ -2468,9 +2497,18 @@ class Casino3DGame {
             const ud = avatar.userData;
             const rig = ud.rig;
             const oldX = avatar.position.x, oldZ = avatar.position.z;
+            // A small local-only shove makes the hit readable instantly for the attacker;
+            // the victim's own position is still authoritative and arrives via multiplayer sync.
+            ud.hitOffsetX = (ud.hitOffsetX || 0) + (ud.hitVx || 0) * dt;
+            ud.hitOffsetZ = (ud.hitOffsetZ || 0) + (ud.hitVz || 0) * dt;
+            const hitDrag = Math.exp(-3.8 * dt);
+            ud.hitVx = (ud.hitVx || 0) * hitDrag;
+            ud.hitVz = (ud.hitVz || 0) * hitDrag;
+            ud.hitOffsetX *= Math.exp(-0.75 * dt);
+            ud.hitOffsetZ *= Math.exp(-0.75 * dt);
             const blend = 1 - Math.exp(-12 * dt);
-            avatar.position.x += (ud.targetX - avatar.position.x) * blend;
-            avatar.position.z += (ud.targetZ - avatar.position.z) * blend;
+            avatar.position.x += (ud.targetX + ud.hitOffsetX - avatar.position.x) * blend;
+            avatar.position.z += (ud.targetZ + ud.hitOffsetZ - avatar.position.z) * blend;
             let angleDelta = ((ud.targetYaw - avatar.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
             avatar.rotation.y += angleDelta * (1 - Math.exp(-14 * dt));
             const moved = Math.hypot(ud.targetX - avatar.position.x, ud.targetZ - avatar.position.z) > 0.025 || Math.hypot(avatar.position.x - oldX, avatar.position.z - oldZ) > 0.002;
@@ -2483,7 +2521,30 @@ class Casino3DGame {
                 rig.armR.rotation.x += (walk * 0.35 - rig.armR.rotation.x) * Math.min(1, dt * 10);
                 if (rig.remoteBat) rig.remoteBat.rotation.z = ud.swingTime > 0 ? -0.18 - Math.sin((1 - ud.swingTime / 0.38) * Math.PI) * 1.05 : -0.18;
             }
-            avatar.position.y = moved ? Math.abs(Math.sin(ud.walkPhase * 2)) * 0.045 : 0;
+            // Air time, gravity, bounce and a rolling/pitching tumble for the remote avatar.
+            if ((ud.hitHeight || 0) > 0 || (ud.hitVy || 0) > 0) {
+                ud.hitVy -= 15.5 * dt;
+                ud.hitHeight += ud.hitVy * dt;
+                if (ud.hitHeight <= 0) {
+                    ud.hitHeight = 0;
+                    if (ud.hitVy < -1.0) ud.hitVy = -ud.hitVy * 0.22;
+                    else ud.hitVy = 0;
+                }
+            }
+            ud.hitPitch = (ud.hitPitch || 0) + (ud.hitPitchVelocity || 0) * dt;
+            ud.hitRoll = (ud.hitRoll || 0) + (ud.hitRollVelocity || 0) * dt;
+            const tumbleDrag = Math.exp(-(ud.hitHeight > 0 ? 2.6 : 9.0) * dt);
+            ud.hitPitchVelocity = (ud.hitPitchVelocity || 0) * tumbleDrag;
+            ud.hitRollVelocity = (ud.hitRollVelocity || 0) * tumbleDrag;
+            if (ud.hitHeight === 0) {
+                ud.hitPitch *= Math.exp(-6.5 * dt);
+                ud.hitRoll *= Math.exp(-6.5 * dt);
+            }
+            if (Math.abs(ud.hitPitch) < 0.015 && Math.abs(ud.hitPitchVelocity) < 0.04) ud.hitPitch = ud.hitPitchVelocity = 0;
+            if (Math.abs(ud.hitRoll) < 0.015 && Math.abs(ud.hitRollVelocity) < 0.04) ud.hitRoll = ud.hitRollVelocity = 0;
+            avatar.position.y = (moved ? Math.abs(Math.sin(ud.walkPhase * 2)) * 0.045 : 0) + (ud.hitHeight || 0);
+            avatar.rotation.x = ud.hitPitch || 0;
+            avatar.rotation.z = ud.hitRoll || 0;
             if (ud.swingTime > 0) ud.swingTime = Math.max(0, ud.swingTime - dt);
         }
 
