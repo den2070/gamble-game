@@ -244,6 +244,10 @@ window.mpSync = {
                     if (msg.type === 'state') {
                         this.localPeers[msg.uid] = { ...msg.state, updatedAt: Date.now() };
                         this.flushLocalPeers();
+                    } else if (msg.type === 'visitorSnapshot' && window.game) {
+                        window.game.applyVisitorSnapshot(msg);
+                    } else if (msg.type === 'visitorHit' && window.game) {
+                        window.game.applyVisitorHit(msg);
                     }
                 };
             }
@@ -280,6 +284,10 @@ window.mpSync = {
                     this.flushLocalPeers();
                 } else if (msg.type === 'machineAction' && window.game) {
                     window.game.applyRemoteMachineAction(msg.machineId, msg.actionIndex, msg.seed);
+                } else if (msg.type === 'visitorSnapshot' && window.game) {
+                    window.game.applyVisitorSnapshot(msg);
+                } else if (msg.type === 'visitorHit' && window.game) {
+                    window.game.applyVisitorHit(msg);
                 } else if (msg.type === 'presence') {
                     const count = Number(msg.count) || 1;
                     const el = document.getElementById('hudOnlineCount');
@@ -303,6 +311,13 @@ window.mpSync = {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             try { this.socket.send(JSON.stringify({ ...packet, uid: myUid, room: this.roomCode })); } catch (_) {}
         }
+    },
+
+    sendWorldPacket(packet) {
+        const msg = { ...packet, uid: myUid, room: this.roomCode };
+        this.sendPacket(packet);
+        if (this.bc) { try { this.bc.postMessage(msg); } catch (_) {} }
+        this.connections.forEach(c => { if (c.open) { try { c.send(msg); } catch (_) {} } });
     },
 
     sendMachineAction(machineId, actionIndex, seed) {
@@ -369,6 +384,10 @@ window.mpSync = {
             if (msg.type === 'state') {
                 this.localPeers[msg.uid] = { ...msg.state, updatedAt: Date.now() };
                 this.flushLocalPeers();
+            } else if (msg.type === 'visitorSnapshot' && window.game) {
+                window.game.applyVisitorSnapshot(msg);
+            } else if (msg.type === 'visitorHit' && window.game) {
+                window.game.applyVisitorHit(msg);
             }
         });
         conn.on('close', () => {
@@ -400,6 +419,8 @@ window.mpSync = {
             z: Number(state.z.toFixed(2)),
             yaw: Number(state.yaw.toFixed(2)),
             floor: state.floor,
+            hasBat: !!state.hasBat,
+            batEvent: state.batEvent || null,
             updatedAt: now
         };
 
@@ -455,6 +476,24 @@ const FLOOR_CONFIG = {
     2: { name: '2 ЭТАЖ (Игровой зал)', minBet: 50, maxBet: 1500, defaultBet: 50, carpetHex: 0x3b1522, wallHex: 0x1f1016, neonHex: 0xf43f5e },
     3: { name: '3 ЭТАЖ (VIP Пентхаус)', minBet: 250, maxBet: 10000, defaultBet: 250, carpetHex: 0x332612, wallHex: 0x1c170d, neonHex: 0xeab308 }
 };
+
+
+function getProceduralFloorConfig(floorNum) {
+    if (FLOOR_CONFIG[floorNum]) return FLOOR_CONFIG[floorNum];
+    const palettes = [
+        [0x172554, 0x0f172a, 0x38bdf8], [0x3f1d2e, 0x1f1016, 0xfb7185],
+        [0x332612, 0x1c170d, 0xeab308], [0x12352b, 0x0b1f1a, 0x34d399],
+        [0x29204a, 0x15102b, 0xa78bfa], [0x3b2415, 0x21150d, 0xfb923c]
+    ];
+    const p = palettes[(floorNum - 1) % palettes.length];
+    const tier = Math.max(1, Math.floor((floorNum - 1) / 3) + 1);
+    const minBet = Math.min(1000000000, Math.round(10 * Math.pow(1.65, floorNum - 1)));
+    return {
+        name: `${floorNum} ЭТАЖ (Процедурный зал ${tier})`,
+        minBet, maxBet: Math.min(2000000000, minBet * 100),
+        defaultBet: minBet, carpetHex: p[0], wallHex: p[1], neonHex: p[2]
+    };
+}
 
 const TALISMANS = [
     { id: 'clover', name: 'Клевер удачи', icon: '🍀', price: 350, desc: 'Повышает шанс выигрыша в слотах.' },
@@ -822,6 +861,11 @@ class Casino3DGame {
 
         this.remotePlayersGroup = new THREE.Group();
         this.scene.add(this.remotePlayersGroup);
+        this.remoteAvatarMeshes = {};
+        this.remoteBatEvent = null;
+        this.batEventCounter = 0;
+        this.lastVisitorSnapshotAt = 0;
+        this.playerKnockback = { x: 0, z: 0, time: 0 };
 
         this.handBatGroup = new THREE.Group();
         const batH = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 0.35, 10), new THREE.MeshStandardMaterial({ color: 0x27272a }));
@@ -921,6 +965,11 @@ class Casino3DGame {
 
         const armR = armL.clone();
         armR.position.set(0.38, 0.95, 0.08); armR.rotation.set(-0.35, 0, -0.45);
+        const remoteBat = new THREE.Group();
+        const remoteBatHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.28, 8), new THREE.MeshStandardMaterial({ color: 0x292524 }));
+        const remoteBatHead = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.075, 0.48, 10), new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.55 }));
+        remoteBatHead.position.y = 0.34; remoteBat.add(remoteBatHandle, remoteBatHead);
+        remoteBat.position.set(0.02, -0.3, 0.12); remoteBat.rotation.z = -0.18; remoteBat.visible = false; armR.add(remoteBat);
 
         const headGroup = new THREE.Group();
         headGroup.position.set(0, 1.56, 0);
@@ -966,7 +1015,7 @@ class Casino3DGame {
         headGroup.add(eyeL, eyeR, browL, browR, nose, hairBack);
         root.add(torso, collar, legL, legR, armL, armR, headGroup);
 
-        return { root, headGroup, armL, armR, legL, legR };
+        return { root, headGroup, armL, armR, legL, legR, remoteBat };
     }
 
     buildFloor3D(floorNum) {
@@ -987,7 +1036,7 @@ class Casino3DGame {
         this.sceneObjects = []; this.npcs = []; this.batPickupMesh = null; this.dealerRig = null;
         this.allInteractiveButtons = [];
 
-        const cfg = FLOOR_CONFIG[floorNum];
+        const cfg = getProceduralFloorConfig(floorNum);
         this.accentLight.color.setHex(cfg.neonHex);
 
         const floorCanvas = document.createElement('canvas'); floorCanvas.width = 256; floorCanvas.height = 256;
@@ -1047,17 +1096,18 @@ class Casino3DGame {
                 liftLight.position.set(0, 2.6, 0);
                 roomGroup.add(liftFloor, liftRoof, backWall, leftWall, rightWall, liftLight);
 
-                for (let f = 1; f <= 3; f++) {
+                const elevatorChoices = [Math.max(1, this.currentFloor - 1), this.currentFloor, Math.min(this.unlockedFloors, this.currentFloor + 1)];
+                elevatorChoices.forEach((f, idx) => {
                     const unlocked = f <= this.unlockedFloors;
                     const btnColor = unlocked ? '#3b82f6' : '#3f3f46';
                     const sqBtn = this.createSquareButton3D(`${f}`, btnColor, '#ffffff', 0.38, () => {
-                        this.startElevatorRide(f);
+                        if (unlocked) this.startElevatorRide(f);
                     });
-                    sqBtn.position.set(1.76, 1.5, -0.6 + (f - 1) * 0.6);
+                    sqBtn.position.set(1.76, 1.5, -0.6 + idx * 0.6);
                     sqBtn.rotation.y = -Math.PI / 2;
                     roomGroup.add(sqBtn);
                     this.allInteractiveButtons.push(sqBtn);
-                }
+                });
                 group.add(roomGroup);
 
             } else if (def.type === 'dealer') {
@@ -1187,7 +1237,7 @@ class Casino3DGame {
 
     getFloorObjects(floor) {
         const common = [
-            { id: 'elevator', type: 'elevator', x: -7.5, z: -8.6, ry: 0, color: '#3b82f6', hexColor: 0x3b82f6, icon: '🛗', name: this.lang === 'ru' ? 'Лифт казино' : 'Casino Elevator', subtitle: this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors} из 3` : `Unlocked floors: ${this.unlockedFloors} of 3` },
+            { id: 'elevator', type: 'elevator', x: -7.5, z: -8.6, ry: 0, color: '#3b82f6', hexColor: 0x3b82f6, icon: '🛗', name: this.lang === 'ru' ? 'Лифт казино' : 'Casino Elevator', subtitle: this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors} (∞)` : `Unlocked floors: ${this.unlockedFloors} (∞)` },
             { id: 'dealer_npc', type: 'dealer', x: 7.5, z: -8.2, ry: 0, color: '#10b981', hexColor: 0x10b981, icon: '🕵️‍♂️', name: this.lang === 'ru' ? 'Ростовщик «Шрам»' : 'Loan Shark', subtitle: this.lang === 'ru' ? 'Чёрный рынок талисманов' : 'Black market talismans' }
         ];
         // Автоматы зависят только от кода комнаты и этажа -> у всех игроков комнаты они одинаковые
@@ -1232,6 +1282,25 @@ class Casino3DGame {
         this.batSwingTimer = 0.38;
         sound.batSwing();
         const fx = -Math.sin(input.yaw), fz = -Math.cos(input.yaw);
+        // Cartoon-style multiplayer hit: only nearby players in front of the swing are affected.
+        let hitPlayerUid = null;
+        let nearestPlayerDist = 2.8;
+        for (const [uid, avatar] of Object.entries(this.remoteAvatarMeshes)) {
+            if (!avatar || avatar.userData.floor !== this.currentFloor) continue;
+            const dx = avatar.userData.targetX - this.player.x;
+            const dz = avatar.userData.targetZ - this.player.z;
+            const dist = Math.max(0.001, Math.hypot(dx, dz));
+            if (dist < nearestPlayerDist && (dx / dist) * fx + (dz / dist) * fz > 0.35) {
+                nearestPlayerDist = dist;
+                hitPlayerUid = uid;
+            }
+        }
+        if (hitPlayerUid) {
+            sound.batHit();
+            this.batEventCounter++;
+            this.remoteBatEvent = { id: `${Date.now()}_${this.batEventCounter}`, targetUid: hitPlayerUid, x: this.player.x, z: this.player.z, yaw: input.yaw, floor: this.currentFloor };
+            this.showToast(this.lang === 'ru' ? '🏏 БАМ! Попадание по игроку!' : '🏏 WHAM! Player hit!', 'amber');
+        }
         for (const npc of this.npcs) {
             const dx = npc.x - this.player.x;
             const dz = npc.z - this.player.z;
@@ -1246,9 +1315,41 @@ class Casino3DGame {
                 npc.vrx = (Math.random() - 0.5) * 9;
                 npc.vry = (Math.random() - 0.5) * 12;
                 npc.vrz = (Math.random() - 0.5) * 9;
+                npc.lastNetworkHit = `${Date.now()}_${this.batEventCounter}_${Math.random()}`;
+                if (window.mpSync) window.mpSync.sendWorldPacket({
+                    type: 'visitorHit', floor: this.currentFloor, visitorIndex: this.npcs.indexOf(npc),
+                    eventId: npc.lastNetworkHit, vx: npc.vx, vz: npc.vz, vrx: npc.vrx, vry: npc.vry, vrz: npc.vrz
+                });
                 this.showToast(this.lang === 'ru' ? '🏏 БАМ! Посетитель отлетел!' : '🏏 WHAM! The guest flew away!', 'amber');
             }
         }
+    }
+
+    applyVisitorSnapshot(packet) {
+        if (!packet || packet.floor !== this.currentFloor || !Array.isArray(packet.visitors)) return;
+        packet.visitors.forEach((v, i) => {
+            const npc = this.npcs[i];
+            if (!npc || !v) return;
+            npc.x = Number(v.x) || 0; npc.z = Number(v.z) || 0;
+            npc.y = Number(v.y) || 0; npc.vx = Number(v.vx) || 0;
+            npc.vz = Number(v.vz) || 0; npc.vy = Number(v.vy) || 0;
+            npc.ragdollTimer = Math.max(0, Number(v.ragdollTimer) || 0);
+            npc.rx = Number(v.rx) || 0; npc.rz = Number(v.rz) || 0;
+            npc.mesh.position.set(npc.x, npc.y, npc.z);
+            npc.mesh.rotation.x = npc.rx; npc.mesh.rotation.z = npc.rz;
+        });
+    }
+
+    applyVisitorHit(packet) {
+        if (!packet || packet.floor !== this.currentFloor) return;
+        const npc = this.npcs[Number(packet.visitorIndex)];
+        if (!npc || npc.lastNetworkHit === packet.eventId) return;
+        npc.lastNetworkHit = packet.eventId;
+        npc.ragdollTimer = 2.0; npc.y = 0; npc.rx = 0; npc.rz = 0;
+        npc.vx = Number(packet.vx) || 0; npc.vz = Number(packet.vz) || 0;
+        npc.vy = 4.8; npc.vrx = Number(packet.vrx) || 0;
+        npc.vry = Number(packet.vry) || 0; npc.vrz = Number(packet.vrz) || 0;
+        sound.batHit();
     }
 
     changeBalance(delta) {
@@ -1304,7 +1405,7 @@ class Casino3DGame {
         if (nightEl) nightEl.textContent = `${english ? 'NIGHT' : 'НОЧЬ'} ${this.night}`;
         if (floorEl) {
             const names = english ? { 1: 'FLOOR 1 (Basement)', 2: 'FLOOR 2 (Gaming Hall)', 3: 'FLOOR 3 (VIP Penthouse)' } : null;
-            floorEl.textContent = names ? names[this.currentFloor] : FLOOR_CONFIG[this.currentFloor].name;
+            floorEl.textContent = names ? names[this.currentFloor] : getProceduralFloorConfig(this.currentFloor).name;
         }
         if (balanceEl) balanceEl.textContent = `$${this.balance.toLocaleString()}`;
         if (targetEl) targetEl.textContent = `$${this.target.toLocaleString()}`;
@@ -1346,7 +1447,7 @@ class Casino3DGame {
         input.unlockPointer();
         const nextNight = this.night + 1;
         const nextTarget = this.getTargetForNight(nextNight);
-        const newUnlocked = Math.min(3, Math.ceil(nextNight / 2));
+        const newUnlocked = Math.max(this.unlockedFloors, Math.ceil(nextNight / 2));
         const unlockedNewFloor = newUnlocked > this.unlockedFloors;
         this.unlockedFloors = newUnlocked;
         const overlay = document.getElementById('overlayScreen');
@@ -1443,7 +1544,7 @@ class Casino3DGame {
     }
 
     setupDiegeticMachine3D(def, group, deck, terminalDesk) {
-        const cfg = FLOOR_CONFIG[this.currentFloor];
+        const cfg = getProceduralFloorConfig(this.currentFloor);
         const scr = this.create3DScreenTexture(512, 320);
         const screenMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.42, 0.88), new THREE.MeshBasicMaterial({ map: scr.tex }));
         screenMesh.position.set(0, 1.66, 0.635); group.add(screenMesh);
@@ -2068,7 +2169,14 @@ class Casino3DGame {
                 mState.status = 'Колесо вращается...';
                 mState.updateScreen();
 
-                const targetSecIndex = Math.floor(Math.random() * sectors.length);
+                const wheelWeights = [30, 25, 20, 12, 7, 4, 1.5, 0.5];
+                const wheelRoll = Math.random() * wheelWeights.reduce((a, b) => a + b, 0);
+                let wheelCursor = 0;
+                let targetSecIndex = 0;
+                for (let wi = 0; wi < wheelWeights.length; wi++) {
+                    wheelCursor += wheelWeights[wi];
+                    if (wheelRoll < wheelCursor) { targetSecIndex = wi; break; }
+                }
                 const arc = (Math.PI * 2) / sectors.length;
                 const extraSpins = 5 + Math.floor(Math.random() * 3);
                 const fullTurn = Math.PI * 2;
@@ -2194,24 +2302,64 @@ class Casino3DGame {
         this.closeModal(); this.buildFloor3D(floorNum);
         this.resetPlayerPosition();
         this.updateHUD();
-        this.showToast(this.lang === 'ru' ? `🛗 Вы на этаже: ${FLOOR_CONFIG[floorNum].name}` : `🛗 Floor: ${FLOOR_CONFIG[floorNum].name}`, 'amber');
+        this.showToast(this.lang === 'ru' ? `🛗 Вы на этаже: ${getProceduralFloorConfig(floorNum).name}` : `🛗 Floor: ${getProceduralFloorConfig(floorNum).name}`, 'amber');
     }
 
     syncRemotePlayers(remoteData) {
         this.remotePlayers = remoteData || {};
-        while (this.remotePlayersGroup.children.length > 0) {
-            this.remotePlayersGroup.remove(this.remotePlayersGroup.children[0]);
+        const activeIds = new Set(Object.keys(this.remotePlayers));
+        for (const [uid, avatar] of Object.entries(this.remoteAvatarMeshes)) {
+            if (!activeIds.has(uid)) {
+                this.remotePlayersGroup.remove(avatar);
+                delete this.remoteAvatarMeshes[uid];
+            }
         }
         for (const [uid, p] of Object.entries(this.remotePlayers)) {
-            if (p.floor !== this.currentFloor) continue;
-            const rig = this.createGoofyCharacterMesh(0x0284c7, 0xa3b18a, 0xfacc15);
-            const avatar = rig.root;
-            const label = this.createSignSprite('👤', p.name || 'ДРУГ', '#38bdf8');
-            label.scale.set(1.5, 0.48, 1); label.position.set(0, 2.35, 0);
-            avatar.add(label);
-            avatar.position.set(p.x || 0, 0, p.z || 0);
-            avatar.rotation.y = (p.yaw || 0) + Math.PI;
-            this.remotePlayersGroup.add(avatar);
+            if (!p || p.floor !== this.currentFloor) {
+                const old = this.remoteAvatarMeshes[uid];
+                if (old) { this.remotePlayersGroup.remove(old); delete this.remoteAvatarMeshes[uid]; }
+                continue;
+            }
+            let avatar = this.remoteAvatarMeshes[uid];
+            if (!avatar) {
+                const rig = this.createGoofyCharacterMesh(0x0284c7, 0xa3b18a, 0xfacc15);
+                avatar = rig.root;
+                const label = this.createSignSprite('👤', p.name || 'ДРУГ', '#38bdf8');
+                label.scale.set(1.5, 0.48, 1); label.position.set(0, 2.35, 0);
+                avatar.add(label);
+                avatar.userData.rig = rig;
+                avatar.userData.targetX = Number(p.x) || 0;
+                avatar.userData.targetZ = Number(p.z) || 0;
+                avatar.userData.targetYaw = (Number(p.yaw) || 0) + Math.PI;
+                avatar.userData.walkPhase = Math.random() * 6;
+                avatar.userData.lastBatEventId = null;
+                avatar.userData.swingTime = 0;
+                avatar.userData.floor = p.floor;
+                avatar.position.set(avatar.userData.targetX, 0, avatar.userData.targetZ);
+                avatar.rotation.y = avatar.userData.targetYaw;
+                this.remotePlayersGroup.add(avatar);
+                this.remoteAvatarMeshes[uid] = avatar;
+            }
+            avatar.userData.targetX = Number(p.x) || 0;
+            avatar.userData.targetZ = Number(p.z) || 0;
+            avatar.userData.targetYaw = (Number(p.yaw) || 0) + Math.PI;
+            avatar.userData.floor = p.floor;
+            const rig = avatar.userData.rig;
+            if (rig && rig.remoteBat) rig.remoteBat.visible = !!p.hasBat;
+            const event = p.batEvent;
+            if (event && event.id && avatar.userData.lastBatEventId !== event.id) {
+                avatar.userData.lastBatEventId = event.id;
+                if (event.floor === this.currentFloor) avatar.userData.swingTime = 0.38;
+                if (event.targetUid === myUid && event.floor === this.currentFloor) {
+                    const dx = this.player.x - (Number(event.x) || 0);
+                    const dz = this.player.z - (Number(event.z) || 0);
+                    const d = Math.max(0.001, Math.hypot(dx, dz));
+                    this.playerKnockback.x = dx / d * 4.2;
+                    this.playerKnockback.z = dz / d * 4.2;
+                    this.playerKnockback.time = 0.22;
+                    sound.batHit();
+                }
+            }
         }
     }
 
@@ -2251,6 +2399,15 @@ class Casino3DGame {
             return;
         }
 
+        if (this.playerKnockback.time > 0) {
+            const kdt = Math.min(dt, this.playerKnockback.time);
+            const nx = Math.max(-10.8, Math.min(10.8, this.player.x + this.playerKnockback.x * kdt));
+            const nz = Math.max(-8.8, Math.min(8.8, this.player.z + this.playerKnockback.z * kdt));
+            if (!this.checkCollision3D(nx, this.player.z)) this.player.x = nx;
+            if (!this.checkCollision3D(this.player.x, nz)) this.player.z = nz;
+            this.playerKnockback.time = Math.max(0, this.playerKnockback.time - dt);
+        }
+
         if (!this.activeModal) {
             const axis = input.getMoveAxis();
             if (axis.turn !== 0) input.yaw += axis.turn * 2.2 * dt;
@@ -2275,7 +2432,7 @@ class Casino3DGame {
         this.camera.rotation.y = input.yaw; this.camera.rotation.x = input.pitch; this.camera.rotation.z = 0;
 
         if (window.mpSync) {
-            window.mpSync.pushMyState({ name: this.playerName, x: this.player.x, z: this.player.z, yaw: input.yaw, floor: this.currentFloor });
+            window.mpSync.pushMyState({ name: this.playerName, x: this.player.x, z: this.player.z, yaw: input.yaw, floor: this.currentFloor, hasBat: this.hasBat, batEvent: this.remoteBatEvent });
         }
 
         if (this.hasBat) {
@@ -2289,6 +2446,30 @@ class Casino3DGame {
                 this.handBatGroup.rotation.x = 0.35 + Math.sin(this.player.bobPhase * 0.5) * 0.04;
                 this.handBatGroup.rotation.z = 0.25; this.handBatGroup.position.z = -0.58;
             }
+        }
+
+        for (const avatar of Object.values(this.remoteAvatarMeshes)) {
+            if (!avatar || avatar.userData.floor !== this.currentFloor) continue;
+            const ud = avatar.userData;
+            const rig = ud.rig;
+            const oldX = avatar.position.x, oldZ = avatar.position.z;
+            const blend = 1 - Math.exp(-12 * dt);
+            avatar.position.x += (ud.targetX - avatar.position.x) * blend;
+            avatar.position.z += (ud.targetZ - avatar.position.z) * blend;
+            let angleDelta = ((ud.targetYaw - avatar.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+            avatar.rotation.y += angleDelta * (1 - Math.exp(-14 * dt));
+            const moved = Math.hypot(ud.targetX - avatar.position.x, ud.targetZ - avatar.position.z) > 0.025 || Math.hypot(avatar.position.x - oldX, avatar.position.z - oldZ) > 0.002;
+            if (moved) ud.walkPhase += dt * 10;
+            const walk = moved ? Math.sin(ud.walkPhase) * 0.62 : 0;
+            if (rig) {
+                rig.legL.rotation.x += (walk - rig.legL.rotation.x) * Math.min(1, dt * 14);
+                rig.legR.rotation.x += (-walk - rig.legR.rotation.x) * Math.min(1, dt * 14);
+                rig.armL.rotation.x += (-walk * 0.35 - rig.armL.rotation.x) * Math.min(1, dt * 10);
+                rig.armR.rotation.x += (walk * 0.35 - rig.armR.rotation.x) * Math.min(1, dt * 10);
+                if (rig.remoteBat) rig.remoteBat.rotation.z = ud.swingTime > 0 ? -0.18 - Math.sin((1 - ud.swingTime / 0.38) * Math.PI) * 1.05 : -0.18;
+            }
+            avatar.position.y = moved ? Math.abs(Math.sin(ud.walkPhase * 2)) * 0.045 : 0;
+            if (ud.swingTime > 0) ud.swingTime = Math.max(0, ud.swingTime - dt);
         }
 
         for (const npc of this.npcs) {
@@ -2333,6 +2514,16 @@ class Casino3DGame {
         const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
         this.lastFrameTime = now;
         this.update(dt);
+        if (window.mpSync && this.state === 'PLAYING' && now - this.lastVisitorSnapshotAt > 450) {
+            this.lastVisitorSnapshotAt = now;
+            window.mpSync.sendWorldPacket({
+                type: 'visitorSnapshot', floor: this.currentFloor,
+                visitors: this.npcs.map(n => ({
+                    x: n.x, z: n.z, y: n.y, vx: n.vx, vz: n.vz, vy: n.vy,
+                    ragdollTimer: n.ragdollTimer, rx: n.rx, rz: n.rz
+                }))
+            });
+        }
         this.renderer.render(this.scene, this.camera);
         requestAnimationFrame((t) => this.loop(t));
     }
