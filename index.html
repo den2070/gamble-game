@@ -60,6 +60,26 @@
                     <div class="font-mono-num text-xs font-extrabold text-emerald-400">v1.0 RELEASE</div>
                 </div>
             </div>
+
+            <div class="bg-zinc-900/95 border border-zinc-700/80 rounded-xl px-3 py-1.5 shadow-lg flex items-center gap-3">
+                <div>
+                    <div id="txtBalance" class="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">Баланс</div>
+                    <div id="hudBalance" class="font-mono-num text-sm sm:text-base font-extrabold text-emerald-400">$1,000</div>
+                </div>
+                <div class="h-6 w-px bg-zinc-700"></div>
+                <div>
+                    <div id="txtTarget" class="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">Цель ночи</div>
+                    <div id="hudTarget" class="font-mono-num text-sm sm:text-base font-extrabold text-amber-300">$1,200</div>
+                    <div class="w-20 h-1 bg-zinc-800 rounded-full overflow-hidden mt-0.5">
+                        <div id="hudQuotaBar" class="h-full bg-emerald-400 transition-all duration-300" style="width: 83%"></div>
+                    </div>
+                </div>
+                <div class="h-6 w-px bg-zinc-700"></div>
+                <div>
+                    <div id="txtTimer" class="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">До рассвета</div>
+                    <div id="hudTimer" class="font-mono-num text-sm sm:text-base font-extrabold text-sky-300">05:00</div>
+                </div>
+            </div>
         </div>
 
         <div class="flex items-center gap-2 pointer-events-auto">
@@ -175,7 +195,7 @@
                 ДОЛГ И <span class="text-amber-400">КАЗИНО 3D</span>
             </h1>
             <p id="txtMenuDesc" class="text-zinc-300 text-xs sm:text-sm leading-relaxed mb-4">
-                На 1-м этаже стоит <b>6 игровых автоматов</b>. Бейте игроков битой на <b>[F]</b> (прыжок на <b>[Space]</b>, чат на <b>[T]</b>). Кулдаун удара по игроку — <b>5 сек</b>.
+                На 1-м этаже стоит <b>6 игровых автоматов</b> с полной синхронизацией. Бейте игроков битой на <b>[F]</b> (прыжок на <b>[Space]</b>, чат на <b>[T]</b>). Кулдаун удара по игроку — <b>5 сек</b>.
             </p>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4 text-left">
                 <div>
@@ -193,6 +213,10 @@
                 <label class="block text-[11px] uppercase tracking-wider text-zinc-400 font-bold mb-1">WebSocket сервер (опционально):</label>
                 <input id="wsServerInput" type="url" placeholder="wss://your-casino-server.example"
                     class="w-full px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-700 focus:border-emerald-400 focus:outline-none font-mono-num text-xs text-emerald-300" />
+                <div class="mt-1.5 flex items-center justify-between text-[11px] text-zinc-400">
+                    <span>Локальный режим (ПК + телефон в одной сети): <strong class="text-sky-300">АВТО</strong></span>
+                    <button type="button" onclick="window.mpSync && window.mpSync.reconnectLocal()" class="text-amber-300 hover:text-amber-200 font-bold underline">Переподключить сеть</button>
+                </div>
             </div>
             <button id="btnStartGame" onclick="game.startNewGame()"
                 class="btn-casino w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-zinc-950 font-black text-base sm:text-lg uppercase tracking-wider">
@@ -210,6 +234,7 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-casino-3d';
 let db = null;
 let auth = null;
 let myUid = 'player_' + Math.random().toString(36).slice(2, 10);
+window.myUid = myUid;
 
 async function initMultiplayer() {
     try {
@@ -223,7 +248,10 @@ async function initMultiplayer() {
             } else {
                 await signInAnonymously(auth);
             }
-            if (auth.currentUser) myUid = auth.currentUser.uid;
+            if (auth.currentUser) {
+                myUid = auth.currentUser.uid;
+                window.myUid = myUid;
+            }
         }
     } catch (e) {
         console.warn('Multiplayer offline fallback:', e);
@@ -235,6 +263,7 @@ window.mpSync = {
     roomCode: 'CASINO777',
     unsubscribePlayers: null,
     lastSyncTime: 0,
+    lastMachineStateSync: 0,
     bc: null,
     localPeers: {},
     peer: null,
@@ -243,13 +272,57 @@ window.mpSync = {
     socketUrl: '',
     isHostAuthority: true,
     hostTickInterval: null,
+    peerRetryTimer: null,
+    seenPackets: new Map(),
     applyingRemoteAction: false,
     currentActionSeed: 0,
+    localEconomy: {
+        night: 1,
+        unlockedFloors: 1,
+        balance: 1000,
+        target: 1200,
+        nightDuration: 300,
+        timeLeft: 300,
+        updatedAt: Date.now()
+    },
+
+    markAndCheckDuplicate(msg) {
+        if (!msg) return false;
+        const pktId = msg.eventId || msg.packetId || (msg.type === 'chat' ? `chat_${msg.uid}_${msg.sender}_${msg.text}` : null);
+        if (!pktId) return false;
+        const now = Date.now();
+        for (const [k, ts] of this.seenPackets.entries()) {
+            if (now - ts > 8000) this.seenPackets.delete(k);
+        }
+        if (this.seenPackets.has(pktId)) return true;
+        this.seenPackets.set(pktId, now);
+        return false;
+    },
+
+    reconnectLocal() {
+        const code = (document.getElementById('roomCodeInput')?.value || this.roomCode || 'CASINO777')
+            .toUpperCase().trim().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'CASINO777';
+        this.joinRoom(code);
+        if (window.game) window.game.showToast(`🔄 Поиск игроков в комнате ${code}...`, 'amber');
+    },
 
     joinRoom(roomCode) {
         this.roomCode = (roomCode || 'CASINO777').toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
         this.localPeers = {};
         this.isHostAuthority = true;
+        this.localEconomy = {
+            night: window.game?.night || 1,
+            unlockedFloors: window.game?.unlockedFloors || 1,
+            balance: window.game?.balance ?? 1000,
+            target: window.game?.target || 1200,
+            nightDuration: window.game?.nightDuration || 300,
+            timeLeft: window.game?.timeLeft ?? 300,
+            updatedAt: Date.now()
+        };
+        if (this.peerRetryTimer) {
+            clearInterval(this.peerRetryTimer);
+            this.peerRetryTimer = null;
+        }
 
         try {
             if (this.bc) this.bc.close();
@@ -257,7 +330,8 @@ window.mpSync = {
                 this.bc = new BroadcastChannel(`casino_room_${this.roomCode}`);
                 this.bc.onmessage = (ev) => {
                     const msg = ev.data;
-                    if (!msg || msg.uid === myUid) return;
+                    const selfId = window.myUid || myUid;
+                    if (!msg || msg.uid === selfId) return;
                     this.handleIncomingNetworkMessage(msg);
                 };
             }
@@ -269,6 +343,7 @@ window.mpSync = {
         this.initPeerJS();
         this.connectFirestore(this.roomCode);
         this.startLocalAuthorityLoop();
+        this.sendWorldPacket({ type: 'requestLocalEconomy' });
     },
 
     hasAuthoritativeServer() {
@@ -282,18 +357,73 @@ window.mpSync = {
             if (this.hasAuthoritativeServer()) return;
             if (!this.isHostAuthority) return;
             this.flushLocalPeers();
+            this.tickLocalEconomy(0.12);
         }, 120);
+    },
+
+    tickLocalEconomy(dt) {
+        const econ = this.localEconomy;
+        if (!econ) return;
+        econ.timeLeft = Math.max(0, Number((econ.timeLeft - dt).toFixed(2)));
+        econ.updatedAt = Date.now();
+        if (window.game && typeof window.game.applyLocalEconomy === 'function') {
+            window.game.applyLocalEconomy({ ...econ });
+        }
+        this.sendLocalOnly({ type: 'localEconomySync', economy: { ...econ } });
+    },
+
+    sendLocalOnly(packet) {
+        const activeUid = window.myUid || myUid;
+        const msg = { ...packet, uid: activeUid, room: this.roomCode };
+        if (this.bc) { try { this.bc.postMessage(msg); } catch (_) {} }
+        this.connections.forEach(c => { if (c && c.open) { try { c.send(msg); } catch (_) {} } });
     },
 
     handleIncomingNetworkMessage(msg) {
         if (!msg || !msg.type) return;
-        if (msg.type === 'state') {
+        if (this.markAndCheckDuplicate(msg)) return;
+        if (msg.type === 'localEconomySync' && msg.economy && window.game) {
+            this.localEconomy = { ...this.localEconomy, ...msg.economy, updatedAt: Date.now() };
+            window.game.applyLocalEconomy(msg.economy);
+        } else if (msg.type === 'localEconomyDelta' && window.game) {
+            const d = Math.round(Number(msg.delta) || 0);
+            this.localEconomy.balance = Math.max(0, Math.round(this.localEconomy.balance) + d);
+            this.localEconomy.updatedAt = Date.now();
+            window.game.applyLocalEconomy({ ...this.localEconomy });
+            this.sendLocalOnly({ type: 'localEconomySync', economy: { ...this.localEconomy } });
+        } else if (msg.type === 'localEconomyReset' && window.game) {
+            this.localEconomy = {
+                night: 1,
+                unlockedFloors: 1,
+                balance: 1000,
+                target: 1200,
+                nightDuration: 300 + (msg.vipWatch ? 45 : 0),
+                timeLeft: 300 + (msg.vipWatch ? 45 : 0),
+                updatedAt: Date.now()
+            };
+            window.game.applyLocalEconomy({ ...this.localEconomy }, 'reset');
+            this.sendLocalOnly({ type: 'localEconomySync', economy: { ...this.localEconomy } });
+        } else if (msg.type === 'requestLocalEconomy' && window.game) {
+            const snap = {
+                night: window.game.night,
+                unlockedFloors: window.game.unlockedFloors,
+                balance: window.game.balance,
+                target: window.game.target,
+                nightDuration: window.game.nightDuration,
+                timeLeft: window.game.timeLeft,
+                updatedAt: Date.now()
+            };
+            this.localEconomy = snap;
+            this.sendLocalOnly({ type: 'localEconomySync', economy: snap });
+        } else if (msg.type === 'state') {
             this.localPeers[msg.uid] = { ...msg.state, updatedAt: Date.now() };
             this.flushLocalPeers();
         } else if (msg.type === 'playerJump' && window.game) {
             window.game.applyRemotePlayerJump(msg);
         } else if (msg.type === 'machineAction' && window.game) {
             window.game.applyRemoteMachineAction(msg.machineId, msg.actionIndex, msg.seed);
+        } else if (msg.type === 'machineLiveState' && window.game) {
+            window.game.applyRemoteMachineLiveState(msg);
         } else if (msg.type === 'visitorSnapshot' && window.game) {
             window.game.applyVisitorSnapshot(msg);
         } else if (msg.type === 'visitorHit' && window.game) {
@@ -327,7 +457,8 @@ window.mpSync = {
             ws.addEventListener('message', (event) => {
                 let msg;
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
-                if (!msg || msg.uid === myUid) return;
+                const selfId = window.myUid || myUid;
+                if (!msg || msg.uid === selfId) return;
                 this.handleIncomingNetworkMessage(msg);
             });
             ws.addEventListener('close', () => {
@@ -347,16 +478,40 @@ window.mpSync = {
     },
 
     sendPacket(packet) {
+        const activeUid = window.myUid || myUid;
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            try { this.socket.send(JSON.stringify({ ...packet, uid: myUid, room: this.roomCode })); } catch (_) {}
+            try { this.socket.send(JSON.stringify({ ...packet, uid: activeUid, room: this.roomCode })); } catch (_) {}
         }
     },
 
     sendWorldPacket(packet) {
-        const msg = { ...packet, uid: myUid, room: this.roomCode };
-        this.sendPacket(packet);
+        const activeUid = window.myUid || myUid;
+        const msg = { ...packet, uid: activeUid, room: this.roomCode };
+        this.sendPacket(msg);
         if (this.bc) { try { this.bc.postMessage(msg); } catch (_) {} }
         this.connections.forEach(c => { if (c.open) { try { c.send(msg); } catch (_) {} } });
+    },
+
+    sendLocalEconomyDelta(delta) {
+        const cleanDelta = Math.round(Number(delta) || 0);
+        if (!cleanDelta) return;
+        this.localEconomy.balance = Math.max(0, Math.round(this.localEconomy.balance) + cleanDelta);
+        this.localEconomy.updatedAt = Date.now();
+        this.sendLocalOnly({ type: 'localEconomyDelta', delta: cleanDelta, economy: { ...this.localEconomy } });
+    },
+
+    sendLocalEconomyReset(vipWatch = false) {
+        const dur = 300 + (vipWatch ? 45 : 0);
+        this.localEconomy = {
+            night: 1,
+            unlockedFloors: 1,
+            balance: 1000,
+            target: 1200,
+            nightDuration: dur,
+            timeLeft: dur,
+            updatedAt: Date.now()
+        };
+        this.sendLocalOnly({ type: 'localEconomyReset', vipWatch: !!vipWatch, economy: { ...this.localEconomy } });
     },
 
     sendChatMessage(sender, text) {
@@ -365,7 +520,15 @@ window.mpSync = {
 
     sendMachineAction(machineId, actionIndex, seed) {
         if (this.applyingRemoteAction) return;
-        this.sendPacket({ type: 'machineAction', machineId, actionIndex, seed });
+        this.sendWorldPacket({ type: 'machineAction', machineId, actionIndex, seed });
+    },
+
+    sendMachineLiveState(machineId, floor, snapshot, force = false) {
+        if (this.applyingRemoteAction) return;
+        const now = performance.now();
+        if (!force && now - this.lastMachineStateSync < 75) return;
+        this.lastMachineStateSync = now;
+        this.sendWorldPacket({ type: 'machineLiveState', machineId, floor, snapshot });
     },
 
     connectFirestore(expectedRoom) {
@@ -394,31 +557,66 @@ window.mpSync = {
 
     initPeerJS() {
         if (typeof Peer === 'undefined') return;
-        try {
-            if (this.peer) { this.peer.destroy(); this.peer = null; }
-            this.connections = [];
-            const hostId = `casino3d-host-${this.roomCode}`;
-            const p = new Peer(hostId);
-            this.peer = p;
-
-            p.on('open', () => {});
-            p.on('connection', (conn) => { this.setupPeerConn(conn, true); });
-            p.on('error', (err) => {
-                if (err.type === 'unavailable-id') {
-                    const guestPeer = new Peer();
-                    this.peer = guestPeer;
-                    guestPeer.on('open', () => {
-                        const conn = guestPeer.connect(hostId, { reliable: false });
-                        this.setupPeerConn(conn, false);
-                    });
+        const startPeerSession = (asHost) => {
+            try {
+                if (this.peer) {
+                    try { this.peer.destroy(); } catch (_) {}
+                    this.peer = null;
                 }
-            });
-        } catch (_) {}
+                const hostId = `casino3d-lan-${this.roomCode}`;
+                const peerConfig = {
+                    debug: 0,
+                    config: {
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' },
+                            { urls: 'stun:global.stun.twilio.com:3478' }
+                        ]
+                    }
+                };
+                const p = asHost ? new Peer(hostId, peerConfig) : new Peer(peerConfig);
+                this.peer = p;
+
+                p.on('open', () => {
+                    if (!asHost) {
+                        const conn = p.connect(hostId, { reliable: true, serialization: 'json' });
+                        this.setupPeerConn(conn, false);
+                    }
+                });
+
+                p.on('connection', (conn) => {
+                    this.setupPeerConn(conn, true);
+                });
+
+                p.on('error', (err) => {
+                    if (asHost && (err.type === 'unavailable-id' || err.type === 'id-taken')) {
+                        startPeerSession(false);
+                    }
+                });
+            } catch (_) {}
+        };
+
+        this.connections = [];
+        startPeerSession(true);
+
+        this.peerRetryTimer = setInterval(() => {
+            if (!window.game || window.game.state !== 'PLAYING') return;
+            if (this.hasAuthoritativeServer()) return;
+            const openConns = this.connections.filter(c => c && c.open);
+            if (openConns.length > 0) return;
+            if (!this.peer || this.peer.disconnected || this.peer.destroyed) {
+                startPeerSession(true);
+            } else if (this.peer.id !== `casino3d-lan-${this.roomCode}` && this.peer.open) {
+                const conn = this.peer.connect(`casino3d-lan-${this.roomCode}`, { reliable: true, serialization: 'json' });
+                this.setupPeerConn(conn, false);
+            }
+        }, 3500);
     },
 
     setupPeerConn(conn, isHost) {
+        if (!conn) return;
         conn.on('open', () => {
-            this.connections.push(conn);
+            if (!this.connections.includes(conn)) this.connections.push(conn);
             if (!this.hasAuthoritativeServer()) {
                 this.isHostAuthority = true;
             }
@@ -428,12 +626,16 @@ window.mpSync = {
             }
         });
         conn.on('data', (msg) => {
-            if (!msg || msg.uid === myUid) return;
-            if (isHost) this.connections.forEach(c => { if (c !== conn && c.open) c.send(msg); });
+            const selfId = window.myUid || myUid;
+            if (!msg || msg.uid === selfId) return;
+            if (isHost) this.connections.forEach(c => { if (c !== conn && c && c.open) { try { c.send(msg); } catch (_) {} } });
             this.handleIncomingNetworkMessage(msg);
         });
         conn.on('close', () => {
-            this.connections = this.connections.filter(c => c !== conn);
+            this.connections = this.connections.filter(c => c !== conn && c && c.open);
+        });
+        conn.on('error', () => {
+            this.connections = this.connections.filter(c => c !== conn && c && c.open);
         });
     },
 
@@ -469,13 +671,13 @@ window.mpSync = {
             batEvent: state.batEvent || null,
             updatedAt: now
         };
-
+        const selfId = window.myUid || myUid;
         if (this.bc) {
-            try { this.bc.postMessage({ type: 'state', uid: myUid, state: payload }); } catch (_) {}
+            try { this.bc.postMessage({ type: 'state', uid: selfId, state: payload }); } catch (_) {}
         }
         this.sendPacket({ type: 'state', state: payload });
         if (this.connections.length > 0) {
-            const pkt = { type: 'state', uid: myUid, state: payload };
+            const pkt = { type: 'state', uid: selfId, state: payload };
             this.connections.forEach(c => { if (c.open) { try { c.send(pkt); } catch (_) {} } });
         }
         if (!db) return;
@@ -507,12 +709,12 @@ if (isTouchDevice) {
 const LOCALES = {
     ru: {
         shift: 'Смена', floor: 'Этаж', online: 'Онлайн', balance: 'Баланс', target: 'Цель ночи', timer: 'До рассвета',
-        submit: 'Сдать долю 🔒', submitOk: 'Сдать долю ✓', menuDesc: 'На 1-м этаже стоит <b>6 игровых автоматов</b>. Бейте игроков битой на <b>[F]</b> (прыжок на <b>[Space]</b>, чат на <b>[T]</b>). Кулдаун удара по игроку — <b>5 сек</b>.',
+        submit: 'Сдать долю 🔒', submitOk: 'Сдать долю ✓', menuDesc: 'На 1-м этаже стоит <b>6 игровых автоматов</b> с полной синхронизацией. Бейте игроков битой на <b>[F]</b> (прыжок на <b>[Space]</b>, чат на <b>[T]</b>). Кулдаун удара по игроку — <b>5 сек</b>.',
         nameLbl: 'Позывной:', roomLbl: 'Код комнаты:', startBtn: 'Войти в 3D казино'
     },
     en: {
         shift: 'Shift', floor: 'Floor', online: 'Online', balance: 'Balance', target: 'Night Target', timer: 'Till Dawn',
-        submit: 'Submit Quota 🔒', submitOk: 'Submit Quota ✓', menuDesc: 'Floor 1 features <b>6 machines</b>. Hit players with the bat on <b>[F]</b> (jump <b>[Space]</b>, chat <b>[T]</b>). <b>5s</b> hit cooldown.',
+        submit: 'Submit Quota 🔒', submitOk: 'Submit Quota ✓', menuDesc: 'Floor 1 features <b>6 synced machines</b>. Hit players with the bat on <b>[F]</b> (jump <b>[Space]</b>, chat <b>[T]</b>). <b>5s</b> hit cooldown.',
         nameLbl: 'Player Name:', roomLbl: 'Room Code:', startBtn: 'Enter 3D Casino'
     }
 };
@@ -924,7 +1126,11 @@ class Casino3DGame {
         this.remoteBatEvent = null;
         this.batEventCounter = 0;
         this.lastVisitorSnapshotAt = 0;
-        this.playerKnockback = { x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0 };
+        this.playerKnockback = {
+            x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0,
+            timer: 0, duration: 1.35, elapsed: 0,
+            fromX: 0, fromZ: 0, goalX: null, goalZ: null
+        };
 
         this.handBatGroup = new THREE.Group();
         const batH = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 0.35, 10), new THREE.MeshStandardMaterial({ color: 0x27272a }));
@@ -1288,10 +1494,15 @@ class Casino3DGame {
         this.resetPlayerPosition();
         this.state = 'PLAYING';
         document.getElementById('overlayScreen').classList.add('hidden');
-        if (window.mpSync && typeof window.mpSync.joinRoom === 'function') window.mpSync.joinRoom(this.roomCode);
+        if (window.mpSync && typeof window.mpSync.joinRoom === 'function') {
+            window.mpSync.joinRoom(this.roomCode);
+            if (!window.mpSync.hasAuthoritativeServer()) {
+                window.mpSync.sendLocalEconomyReset(false);
+            }
+        }
         if (!isTouchDevice) input.lockPointer();
         this.updateHUD();
-        this.appendChatMessage('СИСТЕМА', `Комната ${this.roomCode}. Кулдаун ударов между игроками: 5 сек.`, true);
+        this.appendChatMessage('СИСТЕМА', `Комната ${this.roomCode}. Все 6 автоматов синхронизированы.`, true);
         this.showToast(this.lang === 'ru' ? `🌙 Ночь 1 началась, ${this.playerName}! Цель: $1,200.` : `🌙 Night 1 started, ${this.playerName}! Target: $1,200.`, 'amber');
     }
 
@@ -1388,7 +1599,7 @@ class Casino3DGame {
     }
 
     applyRemotePlayerJump(packet) {
-        const selfId = typeof myUid !== 'undefined' ? myUid : null;
+        const selfId = window.myUid || (typeof myUid !== 'undefined' ? myUid : null);
         if (!packet || !packet.uid || (selfId && packet.uid === selfId)) return;
         if (packet.floor && packet.floor !== this.currentFloor) return;
         const avatar = this.remoteAvatarMeshes[packet.uid];
@@ -1406,7 +1617,12 @@ class Casino3DGame {
         this.player.vy = 0;
         this.player.jumpHeight = 0;
         this.player.bobPhase = 0;
-        if (this.playerKnockback) Object.assign(this.playerKnockback, { x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0 });
+        if (this.playerKnockback) {
+            Object.assign(this.playerKnockback, {
+                x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0,
+                timer: 0, duration: 1.35, elapsed: 0, fromX: 0, fromZ: 0, goalX: null, goalZ: null
+            });
+        }
         input.yaw = 0;
         input.pitch = -0.04;
         if (this.camera) {
@@ -1420,7 +1636,6 @@ class Casino3DGame {
             { id: 'elevator', type: 'elevator', x: -7.5, z: -8.6, ry: 0, color: '#3b82f6', hexColor: 0x3b82f6, icon: '🛗', name: this.lang === 'ru' ? 'Лифт казино' : 'Casino Elevator', subtitle: this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors} (∞)` : `Unlocked floors: ${this.unlockedFloors} (∞)` },
             { id: 'dealer_npc', type: 'dealer', x: 7.5, z: -8.2, ry: 0, color: '#10b981', hexColor: 0x10b981, icon: '🕵️‍♂️', name: this.lang === 'ru' ? 'Ростовщик «Шрам»' : 'Loan Shark', subtitle: this.lang === 'ru' ? 'Чёрный рынок талисманов' : 'Black market talismans' }
         ];
-        // Ровно 6 игровых автоматов на каждом этаже в единой раскладке для всех игроков комнаты
         const rng = mulberry32(hashSeed(`${this.roomCode}|floor${floor}|6machines`));
         const shuffled = [...ALL_GAMES_POOL];
         for (let i = shuffled.length - 1; i > 0; i--) {
@@ -1565,53 +1780,89 @@ class Casino3DGame {
     startRemoteAvatarRagdoll(uid, data) {
         const avatar = this.remoteAvatarMeshes[uid];
         if (!avatar || !data) return;
-        const dur = Number(data.duration) || 1.35;
+        const dur = Math.max(0.75, Number(data.duration) || 1.35);
+        const startX = Number.isFinite(Number(data.startX)) ? Number(data.startX) : avatar.position.x;
+        const startZ = Number.isFinite(Number(data.startZ)) ? Number(data.startZ) : avatar.position.z;
+        const goalX = Number.isFinite(Number(data.endX))
+            ? Math.max(-10.2, Math.min(10.2, Number(data.endX)))
+            : Math.max(-10.2, Math.min(10.2, startX + (Number(data.vx) || 0) * 0.42));
+        const goalZ = Number.isFinite(Number(data.endZ))
+            ? Math.max(-8.2, Math.min(8.2, Number(data.endZ)))
+            : Math.max(-8.2, Math.min(8.2, startZ + (Number(data.vz) || 0) * 0.42));
+
+        avatar.position.x = avatar.position.x * 0.35 + startX * 0.65;
+        avatar.position.z = avatar.position.z * 0.35 + startZ * 0.65;
         avatar.userData.ragdollTimer = dur;
         avatar.userData.ragdollDuration = dur;
-        avatar.userData.ragdollVx = Number(data.vx) || 0;
-        avatar.userData.ragdollVz = Number(data.vz) || 0;
-        avatar.userData.ragdollVy = Number(data.vy) || 6.4;
+        avatar.userData.ragdollElapsed = 0;
+        avatar.userData.ragdollVx = (goalX - avatar.position.x) / Math.max(0.35, dur * 0.85);
+        avatar.userData.ragdollVz = (goalZ - avatar.position.z) / Math.max(0.35, dur * 0.85);
+        avatar.userData.ragdollVy = Math.max(5.2, Number(data.vy) || 6.4);
+        avatar.userData.jumpHeight = Math.max(0.25, Number(data.startY) || 0.25);
+        avatar.userData.jumpVy = avatar.userData.ragdollVy;
         avatar.userData.ragdollSpinX = (Math.random() * 6 + 6) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollSpinY = (Math.random() * 8 + 4) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollRollDir = Math.random() < 0.5 ? -1 : 1;
-        avatar.userData.ragdollGoalX = Number.isFinite(Number(data.endX)) ? Number(data.endX) : avatar.position.x;
-        avatar.userData.ragdollGoalZ = Number.isFinite(Number(data.endZ)) ? Number(data.endZ) : avatar.position.z;
-        avatar.userData.targetX = avatar.userData.ragdollGoalX;
-        avatar.userData.targetZ = avatar.userData.ragdollGoalZ;
+        avatar.userData.ragdollGoalX = goalX;
+        avatar.userData.ragdollGoalZ = goalZ;
+        avatar.userData.targetX = goalX;
+        avatar.userData.targetZ = goalZ;
     }
 
     applyRemotePlayerRagdoll(packet) {
         if (!packet || !packet.eventId) return;
         if (this.lastRemoteRagdollEventId === packet.eventId) return;
         this.lastRemoteRagdollEventId = packet.eventId;
-        if (packet.floor && packet.floor !== this.currentFloor) return;
+        if (packet.floor && Number(packet.floor) !== Number(this.currentFloor)) return;
 
-        const selfId = typeof myUid !== 'undefined' ? myUid : null;
-        if (selfId && packet.targetUid === selfId) {
+        const selfId = String(window.myUid || (typeof myUid !== 'undefined' ? myUid : '') || '');
+        const pktTarget = String(packet.targetUid || '');
+        const pktSender = String(packet.uid || '');
+        const avatarCount = Object.keys(this.remoteAvatarMeshes || {}).length;
+        const isMeTarget = Boolean(
+            (selfId && pktTarget && pktTarget === selfId) ||
+            (!pktTarget && pktSender && selfId && pktSender !== selfId) ||
+            (pktSender && selfId && pktSender !== selfId && avatarCount <= 1)
+        );
+
+        if (isMeTarget) {
             const kb = this.playerKnockback;
-            kb.x = Number(packet.vx) || 0;
-            kb.z = Number(packet.vz) || 0;
-            kb.vy = Number(packet.vy) || 6.6;
-            kb.height = Math.max(kb.height, 0.22);
-            kb.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 14.0;
+            const dur = Math.max(0.75, Number(packet.duration) || 1.35);
+            const startX = Number.isFinite(Number(packet.startX)) ? Number(packet.startX) : this.player.x;
+            const startZ = Number.isFinite(Number(packet.startZ)) ? Number(packet.startZ) : this.player.z;
+            const gx = Number.isFinite(Number(packet.endX))
+                ? Math.max(-10.2, Math.min(10.2, Number(packet.endX)))
+                : Math.max(-10.2, Math.min(10.2, startX + (Number(packet.vx) || 0) * 0.45));
+            const gz = Number.isFinite(Number(packet.endZ))
+                ? Math.max(-8.2, Math.min(8.2, Number(packet.endZ)))
+                : Math.max(-8.2, Math.min(8.2, startZ + (Number(packet.vz) || 0) * 0.45));
+
+            this.player.x = Math.max(-10.2, Math.min(10.2, this.player.x * 0.35 + startX * 0.65));
+            this.player.z = Math.max(-8.2, Math.min(8.2, this.player.z * 0.35 + startZ * 0.65));
+
+            kb.fromX = this.player.x;
+            kb.fromZ = this.player.z;
+            kb.goalX = gx;
+            kb.goalZ = gz;
+            kb.duration = dur;
+            kb.elapsed = 0;
+            kb.timer = dur;
+            const dx = gx - kb.fromX;
+            const dz = gz - kb.fromZ;
+            const flightTime = Math.max(0.35, dur * 0.85);
+            kb.x = dx / flightTime;
+            kb.z = dz / flightTime;
+            kb.vy = Math.max(5.4, Number(packet.vy) || 6.8);
+            kb.height = Math.max(0.28, Number(packet.startY) || 0.28);
+            kb.roll = 0;
+            kb.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 9.5;
             this.player.jumpHeight = kb.height;
             this.player.vy = kb.vy;
-            if (Number.isFinite(Number(packet.endX)) && Number.isFinite(Number(packet.endZ))) {
-                const gx = Math.max(-10.5, Math.min(10.5, Number(packet.endX)));
-                const gz = Math.max(-8.5, Math.min(8.5, Number(packet.endZ)));
-                const dx = gx - this.player.x;
-                const dz = gz - this.player.z;
-                const travelTime = Math.max(0.25, Number(packet.duration) || 1.1);
-                if (Math.hypot(dx, dz) > 0.1) {
-                    kb.x = dx / travelTime;
-                    kb.z = dz / travelTime;
-                }
-            }
             sound.batHit();
-            if (packet.fallSummary) {
-                this.showToast(`💥 Вас ударили! ${packet.fallSummary}`, 'red');
-                this.appendChatMessage('РЕГДОЛЛ', `Вы получили удар: ${packet.fallSummary}`, false);
-            }
+
+            const summary = packet.fallSummary || `fall from ${this.player.x.toFixed(2)} 0.00 ${this.player.z.toFixed(2)} to ${gx.toFixed(2)} 0.00 ${gz.toFixed(2)}`;
+            this.showToast(`💥 Вас ударили! ${summary}`, 'red');
+            this.appendChatMessage('РЕГДОЛЛ', `Вы получили удар: ${summary}`, false);
         } else if (packet.targetUid && this.remoteAvatarMeshes[packet.targetUid]) {
             this.startRemoteAvatarRagdoll(packet.targetUid, packet);
         }
@@ -1644,10 +1895,44 @@ class Casino3DGame {
         sound.batHit();
     }
 
+    applyLocalEconomy(econ, eventReason = null) {
+        if (!econ) return;
+        if (Number.isFinite(Number(econ.night)) && Number(econ.night) >= 1) {
+            this.night = Math.round(Number(econ.night));
+        }
+        if (Number.isFinite(Number(econ.unlockedFloors)) && Number(econ.unlockedFloors) >= 1) {
+            this.unlockedFloors = Math.max(this.unlockedFloors, Math.round(Number(econ.unlockedFloors)));
+        }
+        if (Number.isFinite(Number(econ.balance))) {
+            this.balance = Math.max(0, Math.round(Number(econ.balance)));
+        }
+        if (Number.isFinite(Number(econ.target)) && Number(econ.target) > 0) {
+            this.target = Math.round(Number(econ.target));
+        }
+        if (Number.isFinite(Number(econ.nightDuration)) && Number(econ.nightDuration) > 0) {
+            this.nightDuration = Math.round(Number(econ.nightDuration));
+        }
+        if (Number.isFinite(Number(econ.timeLeft))) {
+            this.timeLeft = Math.max(0, Number(econ.timeLeft));
+        }
+        const modalBalance = document.getElementById('modalBalance');
+        if (modalBalance) modalBalance.textContent = `$${this.balance.toLocaleString()}`;
+        for (const obj of this.sceneObjects) {
+            if (obj.machine3D && typeof obj.machine3D.updateScreen === 'function') obj.machine3D.updateScreen();
+        }
+        this.updateHUD();
+        if (eventReason === 'reset') {
+            this.showToast(this.lang === 'ru' ? '🔄 Локальная комната синхронизирована (Ночь 1, $1,000).' : '🔄 Local room synced (Night 1, $1,000).', 'amber');
+        }
+    }
+
     changeBalance(delta) {
         let amount = Math.round(Number(delta) || 0);
         if (amount < 0 && this.perks.loaded_dice) amount += Math.floor(Math.abs(amount) * 0.2);
         this.balance = Math.max(0, this.balance + amount);
+        if (window.mpSync && typeof window.mpSync.sendLocalEconomyDelta === 'function' && amount !== 0) {
+            window.mpSync.sendLocalEconomyDelta(amount);
+        }
         this.updateHUD();
         const modalBalance = document.getElementById('modalBalance');
         if (modalBalance) modalBalance.textContent = `$${this.balance.toLocaleString()}`;
@@ -1659,8 +1944,7 @@ class Casino3DGame {
     notifyRoundLoss(betAmount) {
         if (this.perks.shield_chip && !this.shieldUsedThisNight && betAmount > 0) {
             this.shieldUsedThisNight = true;
-            this.balance += Math.round(betAmount);
-            this.updateHUD();
+            this.changeBalance(Math.round(betAmount));
             sound.coin();
             this.showToast(this.lang === 'ru' ? `🛡️ Жетон спас $${Math.round(betAmount)}!` : `🛡️ Shield token saved $${Math.round(betAmount)}!`, 'green');
             return true;
@@ -1876,13 +2160,41 @@ class Casino3DGame {
             return btn;
         };
 
-        const mState = { betStr: String(cfg.minBet), bet: cfg.minBet, busy: false, status: 'Введите ставку и играйте!', buttons, scr };
+        const mState = {
+            id: def.id,
+            type: def.type,
+            betStr: String(cfg.minBet),
+            bet: cfg.minBet,
+            busy: false,
+            status: 'Введите ставку и играйте!',
+            buttons,
+            scr,
+            applyRemoteState: null,
+            exportState: () => ({
+                bet: mState.bet,
+                betStr: mState.betStr,
+                busy: !!mState.busy,
+                status: mState.status
+            })
+        };
+
+        const syncMachineSnapshot = (force = false) => {
+            if (!window.mpSync || window.mpSync.applyingRemoteAction) return;
+            const snap = typeof mState.exportState === 'function' ? mState.exportState() : {
+                bet: mState.bet,
+                betStr: mState.betStr,
+                busy: !!mState.busy,
+                status: mState.status
+            };
+            window.mpSync.sendMachineLiveState(def.id, this.currentFloor, snap, force);
+        };
 
         const updateBetVal = (newB) => {
             const clamped = Math.max(0, Math.min(cfg.maxBet, newB));
             mState.bet = clamped;
             mState.betStr = String(clamped);
             if (mState.updateScreen) mState.updateScreen();
+            syncMachineSnapshot(false);
         };
 
         const appendDigit = (digitStr) => {
@@ -1960,6 +2272,15 @@ class Casino3DGame {
             const payouts = { '🍒': 3, '🍋': 4, '🔔': 7, '💎': 12, '7️⃣': 25 };
             let curSyms = ['7️⃣', '💎', '🍒'];
 
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: !!mState.busy,
+                status: mState.status, curSyms: [...curSyms]
+            });
+            mState.applyRemoteState = (snap) => {
+                if (Array.isArray(snap.curSyms) && snap.curSyms.length === 3) curSyms = [...snap.curSyms];
+                mState.updateScreen();
+            };
+
             mState.updateScreen = () => {
                 drawBaseHUD('#f59e0b');
                 const { ctx } = scr;
@@ -1978,6 +2299,7 @@ class Casino3DGame {
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
                 mState.busy = true; const stake = mState.bet; this.changeBalance(-stake);
                 mState.status = 'Барабаны крутятся...'; mState.updateScreen();
+                syncMachineSnapshot(true);
 
                 const pick = () => { const r = Math.random(); return r < 0.34 ? '🍒' : r < 0.62 ? '🍋' : r < 0.82 ? '🔔' : r < 0.94 ? '💎' : '7️⃣'; };
                 let res = [pick(), pick(), pick()];
@@ -1988,6 +2310,7 @@ class Casino3DGame {
                     ticks++; sound.spinTick();
                     for (let i = 0; i < 3; i++) curSyms[i] = ticks >= 10 + i * 4 ? res[i] : symbols[Math.floor(Math.random() * symbols.length)];
                     mState.updateScreen();
+                    syncMachineSnapshot(false);
                     if (ticks >= 20) {
                         clearInterval(iv); mState.busy = false;
                         if (res[0] === res[1] && res[1] === res[2]) {
@@ -2001,6 +2324,7 @@ class Casino3DGame {
                             mState.status = saved ? 'Жетон спас ставку!' : 'Мимо! Ещё раз.';
                         }
                         mState.updateScreen();
+                        syncMachineSnapshot(true);
                     }
                 }, 60);
             };
@@ -2020,6 +2344,43 @@ class Casino3DGame {
                 for (let c = 0; c < cnt; c++) pegs.push({ x: sx + c * 44, y: 78 + r * 26 });
             }
 
+            const plinko3DPenguin = new THREE.Mesh(
+                new THREE.SphereGeometry(0.065, 12, 12),
+                new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 0.45 })
+            );
+            plinko3DPenguin.position.set(0, 2.05, 0.66);
+            plinko3DPenguin.visible = false;
+            group.add(plinko3DPenguin);
+
+            const updatePlinko3DIndicator = () => {
+                if (penguins.length > 0) {
+                    const lead = penguins[0];
+                    const normX = Math.max(-0.58, Math.min(0.58, ((lead.x - 256) / 200) * 0.58));
+                    const normY = Math.max(1.26, Math.min(2.06, 2.06 - ((lead.y - 62) / 175) * 0.8));
+                    plinko3DPenguin.visible = true;
+                    plinko3DPenguin.position.set(normX, normY, 0.665);
+                } else {
+                    plinko3DPenguin.visible = false;
+                }
+            };
+
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: penguins.length > 0,
+                status: mState.status, risk,
+                penguins: penguins.map(p => ({ x: Number(p.x.toFixed(1)), y: Number(p.y.toFixed(1)), vx: Number(p.vx.toFixed(1)), vy: Number(p.vy.toFixed(1)) }))
+            });
+            mState.applyRemoteState = (snap) => {
+                if (snap.risk && multTables[snap.risk]) risk = snap.risk;
+                if (Array.isArray(snap.penguins)) {
+                    penguins.length = 0;
+                    for (const p of snap.penguins) {
+                        penguins.push({ x: Number(p.x) || 256, y: Number(p.y) || 70, vx: Number(p.vx) || 0, vy: Number(p.vy) || 30, stake: 0, risk, remote: true });
+                    }
+                }
+                updatePlinko3DIndicator();
+                mState.updateScreen();
+            };
+
             mState.updateScreen = () => {
                 drawBaseHUD('#38bdf8');
                 const { ctx } = scr;
@@ -2032,49 +2393,73 @@ class Casino3DGame {
                     ctx.fillStyle = '#fff'; ctx.font = 'bold 11px monospace'; ctx.textAlign = 'center';
                     ctx.fillText(`${m[i]}x`, startX + i * sw + sw / 2, 248);
                 }
-                for (const pg of penguins) { ctx.font = '20px sans-serif'; ctx.fillText('🐧', pg.x, pg.y); }
+                for (const pg of penguins) {
+                    ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+                    ctx.beginPath(); ctx.moveTo(pg.x, pg.y); ctx.lineTo(pg.x - pg.vx * 0.08, pg.y - pg.vy * 0.08); ctx.stroke();
+                    ctx.font = '20px sans-serif'; ctx.fillText('🐧', pg.x, pg.y);
+                }
+                updatePlinko3DIndicator();
                 scr.tex.needsUpdate = true;
             };
 
             mState.tickAnim = (dt) => {
-                if (penguins.length === 0) return;
+                if (penguins.length === 0) {
+                    updatePlinko3DIndicator();
+                    return;
+                }
                 const startX = 256 - (9 * 44) / 2;
+                let finishedAny = false;
                 for (let i = penguins.length - 1; i >= 0; i--) {
                     const pg = penguins[i];
                     pg.vy += 380 * dt; pg.x += pg.vx * dt; pg.y += pg.vy * dt;
                     for (const peg of pegs) {
                         if (Math.hypot(pg.x - peg.x, pg.y - peg.y) < 12) {
                             pg.y = peg.y - 12; pg.vx = (Math.random() - 0.5) * 140; pg.vy = -55;
-                            sound.penguinBounce();
+                            if (!pg.remote) sound.penguinBounce();
                         }
                     }
                     if (pg.y >= 232) {
+                        finishedAny = true;
                         const idx = Math.max(0, Math.min(8, Math.floor((pg.x - startX) / 44)));
-                        const mult = multTables[pg.risk][idx];
-                        const win = Math.round(pg.stake * mult);
-                        if (win > 0) { this.changeBalance(win); if (mult >= 2) sound.win(); }
-                        if (win < pg.stake) this.notifyRoundLoss(pg.stake - win);
-                        mState.status = `Лунка ${mult}x → +$${win.toLocaleString()}!`;
+                        const mult = multTables[pg.risk || risk][idx];
+                        if (!pg.remote) {
+                            const win = Math.round(pg.stake * mult);
+                            if (win > 0) { this.changeBalance(win); if (mult >= 2) sound.win(); }
+                            if (win < pg.stake) this.notifyRoundLoss(pg.stake - win);
+                            mState.status = `Лунка ${mult}x → +$${win.toLocaleString()}!`;
+                        }
                         penguins.splice(i, 1);
                     }
                 }
                 mState.updateScreen();
+                syncMachineSnapshot(finishedAny);
             };
 
             addBtn('РИСК', '#0284c7', '#ffffff', -0.38, 0.38, 0.68, 0.18, () => {
                 sound.click(); risk = risk === 'low' ? 'medium' : risk === 'medium' ? 'high' : 'low';
                 mState.status = `Риск: ${risk.toUpperCase()}`; mState.updateScreen();
+                syncMachineSnapshot(true);
             }, deck);
             addBtn('ПУСК 🐧', '#38bdf8', '#09090b', 0.38, 0.38, 0.68, 0.18, () => {
                 if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
                 this.changeBalance(-mState.bet); sound.click();
-                penguins.push({ x: 256 + (Math.random() - 0.5) * 16, y: 62, vx: (Math.random() - 0.5) * 35, vy: 30, stake: mState.bet, risk });
+                mState.status = `Пингвин полетел (${risk.toUpperCase()})!`;
+                penguins.push({ x: 256 + (Math.random() - 0.5) * 16, y: 62, vx: (Math.random() - 0.5) * 35, vy: 30, stake: mState.bet, risk, remote: false });
                 mState.updateScreen();
+                syncMachineSnapshot(true);
             }, deck);
 
         } else if (def.type === 'dice') {
             let dVals = [3, 4];
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: false,
+                status: mState.status, dVals: [...dVals]
+            });
+            mState.applyRemoteState = (snap) => {
+                if (Array.isArray(snap.dVals) && snap.dVals.length === 2) dVals = [...snap.dVals];
+                mState.updateScreen();
+            };
             mState.updateScreen = () => {
                 drawBaseHUD('#8b5cf6');
                 const { ctx } = scr;
@@ -2097,6 +2482,7 @@ class Casino3DGame {
                 if (win > 0) { sound.win(); this.changeBalance(win); mState.status = `Выпало ${sum}! +$${win.toLocaleString()}!`; }
                 else { sound.lose(); const saved = this.notifyRoundLoss(stake); mState.status = saved ? `Выпало ${sum}. Жетон спас!` : `Выпало ${sum}. Проигрыш.`; }
                 mState.updateScreen();
+                syncMachineSnapshot(true);
             };
 
             addBtn('< 7', '#4f46e5', '#ffffff', -0.52, 0.38, 0.46, 0.18, () => roll('under'), deck);
@@ -2109,6 +2495,18 @@ class Casino3DGame {
             const drawC = () => { const r = ranks[Math.floor(Math.random()*ranks.length)], s = suits[Math.floor(Math.random()*suits.length)]; return {l:r.l, v:r.v, s, red: s==='♥'||s==='♦'}; };
             const calc = h => { let sum = h.reduce((a,b)=>a+b.v,0), aces = h.filter(c=>c.v===11).length; while(sum>21&&aces>0){sum-=10;aces--;} return sum; };
             let pHand = [], dHand = [], inRound = false, stake = cfg.minBet, reveal = false;
+
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: inRound,
+                status: mState.status, pHand, dHand, inRound, reveal
+            });
+            mState.applyRemoteState = (snap) => {
+                if (Array.isArray(snap.pHand)) pHand = snap.pHand;
+                if (Array.isArray(snap.dHand)) dHand = snap.dHand;
+                if (typeof snap.inRound === 'boolean') inRound = snap.inRound;
+                if (typeof snap.reveal === 'boolean') reveal = snap.reveal;
+                mState.updateScreen();
+            };
 
             mState.updateScreen = () => {
                 drawBaseHUD('#14b8a6'); const { ctx } = scr;
@@ -2137,6 +2535,7 @@ class Casino3DGame {
                 else if (ps === ds) { sound.coin(); this.changeBalance(stake); mState.status = 'Ничья.'; }
                 else { sound.lose(); const saved = this.notifyRoundLoss(stake); mState.status = saved ? 'Жетон спас!' : 'Дилер победил.'; }
                 mState.updateScreen();
+                syncMachineSnapshot(true);
             };
 
             addBtn('РАЗДАТЬ', '#14b8a6', '#09090b', -0.56, 0.38, 0.35, 0.18, () => {
@@ -2146,11 +2545,13 @@ class Casino3DGame {
                 sound.click(); stake = mState.bet; this.changeBalance(-stake); inRound = true; reveal = false;
                 pHand = [drawC(), drawC()]; dHand = [drawC(), drawC()];
                 mState.status = 'Ваш ход!'; mState.updateScreen();
+                syncMachineSnapshot(true);
             }, deck);
             addBtn('ЕЩЁ', '#f59e0b', '#09090b', -0.18, 0.38, 0.32, 0.18, () => {
                 if (!inRound) return; sound.click(); pHand.push(drawC());
                 if (calc(pHand) > 21) { reveal = true; inRound = false; sound.lose(); this.notifyRoundLoss(stake); mState.status = 'Перебор!'; }
                 mState.updateScreen();
+                syncMachineSnapshot(true);
             }, deck);
             addBtn('ХВАТИТ', '#52525b', '#ffffff', 0.18, 0.38, 0.32, 0.18, () => { if (inRound) finishD(); }, deck);
             addBtn('x2', '#9333ea', '#ffffff', 0.56, 0.38, 0.32, 0.18, () => {
@@ -2161,6 +2562,7 @@ class Casino3DGame {
                     const saved = this.notifyRoundLoss(stake);
                     mState.status = saved ? 'Перебор! Жетон спас ставку.' : 'Перебор!';
                     mState.updateScreen();
+                    syncMachineSnapshot(true);
                 } else finishD();
             }, deck);
 
@@ -2169,6 +2571,17 @@ class Casino3DGame {
             const duckColors = ['#facc15', '#38bdf8', '#f472b6', '#4ade80'];
             let duckProgress = [0.1, 0.1, 0.1, 0.1];
             let racing = false;
+
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: racing,
+                status: mState.status, selectedDuck, duckProgress: [...duckProgress], racing
+            });
+            mState.applyRemoteState = (snap) => {
+                if (Number.isInteger(snap.selectedDuck)) selectedDuck = snap.selectedDuck;
+                if (Array.isArray(snap.duckProgress) && snap.duckProgress.length === 4) duckProgress = [...snap.duckProgress];
+                if (typeof snap.racing === 'boolean') racing = snap.racing;
+                mState.updateScreen();
+            };
 
             mState.updateScreen = () => {
                 drawBaseHUD('#facc15');
@@ -2191,6 +2604,7 @@ class Casino3DGame {
                 if (racing) return;
                 sound.click(); selectedDuck = (selectedDuck % 4) + 1;
                 mState.status = `Выбрана утка #${selectedDuck}`; mState.updateScreen();
+                syncMachineSnapshot(true);
             }, deck);
             addBtn('СТАРТ 🦆', '#eab308', '#09090b', 0.38, 0.38, 0.68, 0.18, () => {
                 if (racing) return;
@@ -2199,6 +2613,7 @@ class Casino3DGame {
                 const stake = mState.bet; this.changeBalance(-stake);
                 racing = true; duckProgress = [0.05, 0.05, 0.05, 0.05];
                 sound.duckQuack(); mState.status = `Гонка уток! Ставка на #${selectedDuck}`; mState.updateScreen();
+                syncMachineSnapshot(true);
 
                 mState.tickAnim = (dt) => {
                     if (!racing) return;
@@ -2208,6 +2623,7 @@ class Casino3DGame {
                         if (duckProgress[i] >= 1 && winner === -1) winner = i + 1;
                     }
                     mState.updateScreen();
+                    syncMachineSnapshot(false);
                     if (winner !== -1) {
                         racing = false; mState.tickAnim = null;
                         if (winner === selectedDuck) {
@@ -2218,6 +2634,7 @@ class Casino3DGame {
                             mState.status = saved ? `Победила #${winner}. Жетон спас!` : `Победила #${winner}. Проигрыш.`;
                         }
                         mState.updateScreen();
+                        syncMachineSnapshot(true);
                     }
                 };
             }, deck);
@@ -2241,6 +2658,16 @@ class Casino3DGame {
             ];
             let rouletteAngle = 0;
             let isSpinningR = false;
+
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: isSpinningR,
+                status: mState.status, rouletteAngle: Number(rouletteAngle.toFixed(3)), isSpinningR
+            });
+            mState.applyRemoteState = (snap) => {
+                if (Number.isFinite(Number(snap.rouletteAngle))) rouletteAngle = Number(snap.rouletteAngle);
+                if (typeof snap.isSpinningR === 'boolean') isSpinningR = snap.isSpinningR;
+                mState.updateScreen();
+            };
 
             mState.updateScreen = () => {
                 drawBaseHUD('#ef4444');
@@ -2309,6 +2736,7 @@ class Casino3DGame {
                 isSpinningR = true;
                 mState.status = 'Рулетка крутится...';
                 mState.updateScreen();
+                syncMachineSnapshot(true);
 
                 const targetIndex = Math.floor(Math.random() * rouletteSectors.length);
                 const arc = (Math.PI * 2) / rouletteSectors.length;
@@ -2331,6 +2759,7 @@ class Casino3DGame {
 
                     rouletteAngle = startAngle + (targetAngle - startAngle) * ease;
                     mState.updateScreen();
+                    syncMachineSnapshot(false);
                     sound.spinTick();
 
                     if (progress < 1) {
@@ -2360,6 +2789,7 @@ class Casino3DGame {
                                 : `Выпало ${finalNum} (${actualColor.toUpperCase()}). Проигрыш.`;
                         }
                         mState.updateScreen();
+                        syncMachineSnapshot(true);
                     }
                 };
 
@@ -2381,6 +2811,19 @@ class Casino3DGame {
             rocketModel.add(rBody, rFlame);
             group.add(rocketModel);
 
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: rocketState === 'flying',
+                status: mState.status, rocketState, mult: Number(mult.toFixed(2)),
+                rocketY: Number(rocketModel.position.y.toFixed(3))
+            });
+            mState.applyRemoteState = (snap) => {
+                if (snap.rocketState) rocketState = snap.rocketState;
+                if (Number.isFinite(Number(snap.mult))) mult = Number(snap.mult);
+                if (Number.isFinite(Number(snap.rocketY))) rocketModel.position.y = Number(snap.rocketY);
+                rFlame.visible = rocketState === 'flying';
+                mState.updateScreen();
+            };
+
             mState.updateScreen = () => {
                 drawBaseHUD('#f97316');
                 const { ctx, canvas } = scr;
@@ -2400,6 +2843,7 @@ class Casino3DGame {
                 stake = mState.bet; this.changeBalance(-stake);
                 rocketState = 'flying'; mult = 1.0; crashAt = +(1.2 + Math.random() * 4.5).toFixed(2);
                 sound.spinTick(); mState.status = 'Ракета летит!'; mState.updateScreen();
+                syncMachineSnapshot(true);
 
                 mState.tickAnim = (dt) => {
                     if (rocketState !== 'flying') return;
@@ -2407,23 +2851,26 @@ class Casino3DGame {
                     rocketModel.position.y = Math.sin(Date.now() * 0.01) * 0.15;
                     rFlame.visible = Math.random() > 0.2;
                     if (mult >= crashAt) {
-                        rocketState = 'crashed'; sound.lose();
+                        rocketState = 'crashed'; rFlame.visible = false; sound.lose();
                         this.notifyRoundLoss(stake);
                         mState.status = `Ракета взорвалась на ${crashAt}x!`;
                         mState.updateScreen();
+                        syncMachineSnapshot(true);
                     } else {
                         mState.updateScreen();
+                        syncMachineSnapshot(false);
                     }
                 };
             }, deck);
 
             addBtn('СТОП 🛑', '#ef4444', '#ffffff', 0.38, 0.38, 0.68, 0.18, () => {
                 if (rocketState !== 'flying') return;
-                rocketState = 'cashed';
+                rocketState = 'cashed'; rFlame.visible = false;
                 const win = Math.round(stake * mult);
                 sound.bigWin(); this.changeBalance(win);
                 mState.status = `Забрано на ${mult.toFixed(2)}x! +$${win}!`;
                 mState.updateScreen();
+                syncMachineSnapshot(true);
             }, deck);
 
         } else if (def.type === 'wheel') {
@@ -2439,6 +2886,16 @@ class Casino3DGame {
             ];
             let wheelAngle = 0;
             let isSpinning = false;
+
+            mState.exportState = () => ({
+                bet: mState.bet, betStr: mState.betStr, busy: isSpinning,
+                status: mState.status, wheelAngle: Number(wheelAngle.toFixed(3)), isSpinning
+            });
+            mState.applyRemoteState = (snap) => {
+                if (Number.isFinite(Number(snap.wheelAngle))) wheelAngle = Number(snap.wheelAngle);
+                if (typeof snap.isSpinning === 'boolean') isSpinning = snap.isSpinning;
+                mState.updateScreen();
+            };
 
             mState.updateScreen = () => {
                 drawBaseHUD('#eab308');
@@ -2507,6 +2964,7 @@ class Casino3DGame {
                 isSpinning = true;
                 mState.status = 'Колесо вращается...';
                 mState.updateScreen();
+                syncMachineSnapshot(true);
 
                 const wheelWeights = [30, 25, 20, 12, 7, 4, 1.5, 0.5];
                 const wheelRoll = Math.random() * wheelWeights.reduce((a, b) => a + b, 0);
@@ -2536,6 +2994,7 @@ class Casino3DGame {
 
                     wheelAngle = startAngle + (targetAngle - startAngle) * ease;
                     mState.updateScreen();
+                    syncMachineSnapshot(false);
                     sound.spinTick();
 
                     if (progress < 1) {
@@ -2561,6 +3020,7 @@ class Casino3DGame {
                                 : `Сектор ${sec.label}. Проигрыш.`;
                         }
                         mState.updateScreen();
+                        syncMachineSnapshot(true);
                     }
                 };
 
@@ -2572,6 +3032,24 @@ class Casino3DGame {
 
         mState.updateScreen();
         def.machine3D = mState;
+    }
+
+    applyRemoteMachineLiveState(packet) {
+        if (!packet || !packet.machineId || !packet.snapshot) return;
+        if (packet.floor && Number(packet.floor) !== Number(this.currentFloor)) return;
+        const obj = this.sceneObjects.find(o => o && o.id === packet.machineId && o.machine3D);
+        if (!obj) return;
+        const m = obj.machine3D;
+        const snap = packet.snapshot;
+        if (Number.isFinite(Number(snap.bet))) m.bet = Number(snap.bet);
+        if (typeof snap.betStr === 'string') m.betStr = snap.betStr;
+        if (typeof snap.busy === 'boolean') m.busy = snap.busy;
+        if (typeof snap.status === 'string') m.status = snap.status;
+        if (typeof m.applyRemoteState === 'function') {
+            m.applyRemoteState(snap);
+        } else if (typeof m.updateScreen === 'function') {
+            m.updateScreen();
+        }
     }
 
     applyRemoteMachineAction(machineId, actionIndex, seed = 0) {
@@ -2680,11 +3158,14 @@ class Casino3DGame {
                 this.remotePlayersGroup.add(avatar);
                 this.remoteAvatarMeshes[uid] = avatar;
             }
-            avatar.userData.targetX = Number(p.x) || 0;
-            avatar.userData.targetZ = Number(p.z) || 0;
+            const isAvatarInRagdoll = (avatar.userData.ragdollTimer || 0) > 0;
+            if (!isAvatarInRagdoll) {
+                avatar.userData.targetX = Number(p.x) || 0;
+                avatar.userData.targetZ = Number(p.z) || 0;
+            }
             avatar.userData.targetYaw = (Number(p.yaw) || 0) + Math.PI;
             avatar.userData.floor = p.floor;
-            if ((p.jumping || (Number(p.y) || 0) > 0.05) && !(avatar.userData.ragdollTimer > 0)) {
+            if ((p.jumping || (Number(p.y) || 0) > 0.05) && !isAvatarInRagdoll) {
                 avatar.userData.jumpHeight = Math.max(avatar.userData.jumpHeight || 0, Number(p.y) || 0.15);
                 if (Number.isFinite(Number(p.vy)) && Number(p.vy) > 0.2) {
                     avatar.userData.jumpVy = Number(p.vy);
@@ -2693,26 +3174,36 @@ class Casino3DGame {
             const rig = avatar.userData.rig;
             if (rig && rig.remoteBat) rig.remoteBat.visible = !!p.hasBat;
 
-            if (p.ragdoll && p.ragdoll.eventId && avatar.userData.lastBatEventId !== p.ragdoll.eventId) {
-                avatar.userData.lastBatEventId = p.ragdoll.eventId;
-                if (p.ragdoll.floor === this.currentFloor) {
-                    if (p.ragdoll.targetUid === uid) {
-                        this.startRemoteAvatarRagdoll(uid, p.ragdoll);
-                    } else if (typeof myUid !== 'undefined' && p.ragdoll.targetUid === myUid) {
-                        this.applyRemotePlayerRagdoll(p.ragdoll);
+            const ragPkt = p.ragdoll || p.batEvent;
+            if (ragPkt && ragPkt.eventId && avatar.userData.lastBatEventId !== ragPkt.eventId) {
+                avatar.userData.lastBatEventId = ragPkt.eventId;
+                if (p.batEvent && p.batEvent.id && Number(p.batEvent.floor) === Number(this.currentFloor)) {
+                    avatar.userData.swingTime = 0.38;
+                }
+                if (Number(ragPkt.floor) === Number(this.currentFloor)) {
+                    const selfId = String(window.myUid || (typeof myUid !== 'undefined' ? myUid : '') || '');
+                    if (selfId && ragPkt.targetUid && String(ragPkt.targetUid) === selfId) {
+                        this.applyRemotePlayerRagdoll(ragPkt);
+                    } else if (ragPkt.targetUid && this.remoteAvatarMeshes[ragPkt.targetUid]) {
+                        this.startRemoteAvatarRagdoll(ragPkt.targetUid, ragPkt);
+                    } else if (uid !== selfId) {
+                        this.startRemoteAvatarRagdoll(uid, ragPkt);
                     }
                 }
             }
+        }
+    }
 
-            const event = p.batEvent;
-            if (event && event.id && avatar.userData.lastBatEventId !== event.id) {
-                avatar.userData.lastBatEventId = event.id;
-                if (event.floor === this.currentFloor) avatar.userData.swingTime = 0.38;
-                if (typeof myUid !== 'undefined' && event.targetUid === myUid && event.floor === this.currentFloor) {
-                    this.applyRemotePlayerRagdoll(event);
-                }
+    checkCollision3D(nx, nz) {
+        if (Math.abs(nx) > 10.9 || Math.abs(nz) > 8.9) return true;
+        for (const obj of this.sceneObjects) {
+            if (!obj || obj.type === 'bat_pickup') continue;
+            const radius = obj.type === 'elevator' ? 1.7 : obj.type === 'dealer' ? 1.25 : 1.05;
+            if (Math.hypot(nx - obj.x, nz - obj.z) < radius) {
+                return true;
             }
         }
+        return false;
     }
 
     update(dt) {
@@ -2765,35 +3256,54 @@ class Casino3DGame {
         }
 
         const kb = this.playerKnockback;
-        if (Math.abs(kb.x) > 0.03 || Math.abs(kb.z) > 0.03 || kb.height > 0 || kb.vy > 0) {
-            const nx = Math.max(-10.8, Math.min(10.8, this.player.x + kb.x * dt));
-            const nz = Math.max(-8.8, Math.min(8.8, this.player.z + kb.z * dt));
+        if (kb.timer > 0) {
+            kb.timer = Math.max(0, kb.timer - dt);
+            kb.elapsed = (kb.elapsed || 0) + dt;
+        }
+        if (Math.abs(kb.x) > 0.03 || Math.abs(kb.z) > 0.03 || kb.height > 0 || kb.vy > 0 || kb.timer > 0) {
+            const flightRatio = Math.min(1, (kb.elapsed || 0) / Math.max(0.35, (kb.duration || 1.35) * 0.85));
+            let nx = this.player.x + kb.x * dt;
+            let nz = this.player.z + kb.z * dt;
+            if (kb.timer <= 0.25 && Number.isFinite(kb.goalX) && Number.isFinite(kb.goalZ)) {
+                nx = nx * 0.72 + kb.goalX * 0.28;
+                nz = nz * 0.72 + kb.goalZ * 0.28;
+            }
+            nx = Math.max(-10.5, Math.min(10.5, nx));
+            nz = Math.max(-8.5, Math.min(8.5, nz));
             if (!this.checkCollision3D(nx, this.player.z)) this.player.x = nx; else kb.x *= -0.35;
             if (!this.checkCollision3D(this.player.x, nz)) this.player.z = nz; else kb.z *= -0.35;
-            const drag = Math.exp(-2.4 * dt);
+
+            const drag = Math.exp(-1.55 * dt);
             kb.x *= drag; kb.z *= drag;
-            kb.vy -= 15.5 * dt;
+            kb.vy -= 14.5 * dt;
             kb.height += kb.vy * dt;
             if (kb.height <= 0) {
                 kb.height = 0;
-                if (kb.vy < -3.2) {
-                    kb.vy = -kb.vy * 0.35;
+                if (kb.vy < -2.6) {
+                    kb.vy = -kb.vy * 0.42;
                     sound.penguinBounce();
                 } else {
                     kb.vy = 0;
                 }
             }
+            const swingWave = Math.sin(flightRatio * Math.PI);
             kb.roll += kb.rollVelocity * dt;
-            kb.rollVelocity *= Math.exp(-(kb.height > 0 ? 2.1 : 8.5) * dt);
-            if (kb.height === 0) kb.roll *= Math.exp(-6.5 * dt);
-            if (Math.abs(kb.roll) < 0.015 && Math.abs(kb.rollVelocity) < 0.03) {
-                kb.roll = 0; kb.rollVelocity = 0;
+            kb.roll = Math.max(-0.85, Math.min(0.85, kb.roll + swingWave * 0.06 * Math.sign(kb.rollVelocity || 1)));
+            kb.rollVelocity *= Math.exp(-(kb.height > 0 ? 1.8 : 7.5) * dt);
+            if (kb.height === 0) kb.roll *= Math.exp(-5.5 * dt);
+
+            if (kb.timer === 0 && kb.height === 0 && Math.abs(kb.roll) < 0.02 && Math.abs(kb.rollVelocity) < 0.05) {
+                if (Number.isFinite(kb.goalX) && !this.checkCollision3D(kb.goalX, this.player.z)) this.player.x = kb.goalX;
+                if (Number.isFinite(kb.goalZ) && !this.checkCollision3D(this.player.x, kb.goalZ)) this.player.z = kb.goalZ;
+                kb.x = 0; kb.z = 0; kb.vy = 0; kb.height = 0; kb.roll = 0; kb.rollVelocity = 0;
+                kb.elapsed = 0; kb.goalX = null; kb.goalZ = null;
             }
-            this.player.jumpHeight = Math.max(this.player.jumpHeight || 0, kb.height);
+            this.player.jumpHeight = kb.height;
         }
 
         this.playerMoveSpeed = 0;
-        if (!this.activeModal) {
+        const isKnockedDown = (this.playerKnockback.timer || 0) > 0 || (this.playerKnockback.height || 0) > 0.05;
+        if (!this.activeModal && !isKnockedDown) {
             const axis = input.getMoveAxis();
             if (axis.turn !== 0) input.yaw += axis.turn * 2.2 * dt;
             const speed = this.player.baseSpeed * (this.perks.espresso ? 1.35 : 1);
@@ -2815,9 +3325,134 @@ class Casino3DGame {
 
         const totalAirHeight = Math.max(this.playerKnockback.height, this.player.jumpHeight || 0);
         const headBob = totalAirHeight > 0.02 ? 0 : Math.sin(this.player.bobPhase) * 0.045;
-        const fallDrop = this.playerKnockback.height > 0 ? Math.min(0.65, Math.abs(this.playerKnockback.roll) * 0.25) : 0;
+        const fallDrop = this.playerKnockback.height > 0 ? Math.min(0.55, Math.abs(this.playerKnockback.roll) * 0.22) : 0;
+        const pitchTilt = isKnockedDown ? Math.min(0.32, totalAirHeight * 0.14) : 0;
         this.camera.position.set(this.player.x, Math.max(0.55, this.player.y + totalAirHeight + headBob - fallDrop), this.player.z);
-        this.camera.rotation.y = input.yaw; this.camera.rotation.x = input.pitch; this.camera.rotation.z = this.playerKnockback.roll;
+        this.camera.rotation.y = input.yaw;
+        this.camera.rotation.x = Math.max(-0.78, Math.min(0.78, input.pitch - pitchTilt));
+        this.camera.rotation.z = this.playerKnockback.roll;
+
+        for (const avatar of Object.values(this.remoteAvatarMeshes)) {
+            if (!avatar) continue;
+            const ud = avatar.userData;
+            const rig = ud.rig;
+            const oldX = avatar.position.x, oldZ = avatar.position.z;
+            if ((ud.ragdollTimer || 0) > 0) {
+                ud.ragdollTimer = Math.max(0, ud.ragdollTimer - dt);
+                ud.ragdollElapsed = (ud.ragdollElapsed || 0) + dt;
+                const ratio = Math.min(1, ud.ragdollElapsed / Math.max(0.35, (ud.ragdollDuration || 1.35) * 0.85));
+                let rnx = avatar.position.x + (ud.ragdollVx || 0) * dt;
+                let rnz = avatar.position.z + (ud.ragdollVz || 0) * dt;
+                if (ud.ragdollTimer <= 0.25 && Number.isFinite(ud.ragdollGoalX) && Number.isFinite(ud.ragdollGoalZ)) {
+                    rnx = rnx * 0.72 + ud.ragdollGoalX * 0.28;
+                    rnz = rnz * 0.72 + ud.ragdollGoalZ * 0.28;
+                }
+                rnx = Math.max(-10.2, Math.min(10.2, rnx));
+                rnz = Math.max(-8.2, Math.min(8.2, rnz));
+                if (!this.checkCollision3D(rnx, avatar.position.z)) avatar.position.x = rnx;
+                if (!this.checkCollision3D(avatar.position.x, rnz)) avatar.position.z = rnz;
+
+                ud.ragdollVy = (ud.ragdollVy || 0) - 14.5 * dt;
+                ud.jumpHeight = (ud.jumpHeight || 0) + ud.ragdollVy * dt;
+                if (ud.jumpHeight <= 0) {
+                    ud.jumpHeight = 0;
+                    ud.ragdollVy = ud.ragdollVy < -2.6 ? -ud.ragdollVy * 0.42 : 0;
+                }
+                const swing = Math.sin(ratio * Math.PI);
+                avatar.rotation.x = swing * 0.65 * (ud.ragdollRollDir || 1);
+                avatar.rotation.z = swing * 0.78 * (ud.ragdollRollDir || 1);
+                avatar.rotation.y += (ud.ragdollSpinY || 5) * dt;
+                avatar.position.y = ud.jumpHeight;
+
+                if (ud.ragdollTimer === 0 && ud.jumpHeight === 0) {
+                    if (Number.isFinite(ud.ragdollGoalX) && !this.checkCollision3D(ud.ragdollGoalX, avatar.position.z)) avatar.position.x = ud.ragdollGoalX;
+                    if (Number.isFinite(ud.ragdollGoalZ) && !this.checkCollision3D(avatar.position.x, ud.ragdollGoalZ)) avatar.position.z = ud.ragdollGoalZ;
+                    avatar.rotation.x = 0;
+                    avatar.rotation.z = 0;
+                    avatar.position.y = 0;
+                }
+            } else {
+                const blend = 1 - Math.exp(-12 * dt);
+                avatar.position.x += (ud.targetX - avatar.position.x) * blend;
+                avatar.position.z += (ud.targetZ - avatar.position.z) * blend;
+                if ((ud.jumpHeight || 0) > 0 || (ud.jumpVy || 0) > 0) {
+                    ud.jumpVy = (ud.jumpVy || 0) - 16.5 * dt;
+                    ud.jumpHeight = Math.max(0, (ud.jumpHeight || 0) + ud.jumpVy * dt);
+                    if (ud.jumpHeight === 0 && ud.jumpVy < 0) ud.jumpVy = 0;
+                }
+                let angleDelta = ((ud.targetYaw - avatar.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+                avatar.rotation.y += angleDelta * (1 - Math.exp(-14 * dt));
+                const moved = Math.hypot(ud.targetX - avatar.position.x, ud.targetZ - avatar.position.z) > 0.025 || Math.hypot(avatar.position.x - oldX, avatar.position.z - oldZ) > 0.002;
+                if (moved) ud.walkPhase += dt * 10;
+                const walk = moved ? Math.sin(ud.walkPhase) * 0.62 : 0;
+                if (rig) {
+                    rig.legL.rotation.x += (walk - rig.legL.rotation.x) * Math.min(1, dt * 14);
+                    rig.legR.rotation.x += (-walk - rig.legR.rotation.x) * Math.min(1, dt * 14);
+                    rig.armL.rotation.x += (-walk * 0.35 - rig.armL.rotation.x) * Math.min(1, dt * 10);
+                    rig.armR.rotation.x += (walk * 0.35 - rig.armR.rotation.x) * Math.min(1, dt * 10);
+                    if (rig.remoteBat) rig.remoteBat.rotation.z = ud.swingTime > 0 ? -0.18 - Math.sin((1 - ud.swingTime / 0.38) * Math.PI) * 1.05 : -0.18;
+                }
+                avatar.position.y = (ud.jumpHeight || 0) + (moved ? Math.abs(Math.sin(ud.walkPhase * 2)) * 0.045 : 0);
+            }
+            if (ud.swingTime > 0) ud.swingTime = Math.max(0, ud.swingTime - dt);
+        }
+
+        for (const npc of this.npcs) {
+            if (!npc || !npc.mesh) continue;
+            if ((npc.ragdollTimer || 0) > 0) {
+                npc.ragdollTimer = Math.max(0, npc.ragdollTimer - dt);
+                npc.vy = (npc.vy || 0) - 16.5 * dt;
+                npc.x = Math.max(-10.4, Math.min(10.4, npc.x + (npc.vx || 0) * dt));
+                npc.z = Math.max(-8.4, Math.min(8.4, npc.z + (npc.vz || 0) * dt));
+                npc.y = (npc.y || 0) + npc.vy * dt;
+                if (npc.y <= 0) {
+                    npc.y = 0;
+                    if (npc.vy < -2.4) npc.vy = -npc.vy * 0.42;
+                    else npc.vy = 0;
+                    npc.vx *= 0.72;
+                    npc.vz *= 0.72;
+                }
+                npc.rx = (npc.rx || 0) + (npc.vrx || 0) * dt;
+                npc.rz = (npc.rz || 0) + (npc.vrz || 0) * dt;
+                npc.mesh.position.set(npc.x, npc.y, npc.z);
+                npc.mesh.rotation.x = npc.rx;
+                npc.mesh.rotation.z = npc.rz;
+                npc.mesh.rotation.y += (npc.vry || 0) * dt;
+                if (npc.ragdollTimer === 0 && npc.y === 0) {
+                    npc.rx = 0; npc.rz = 0; npc.vx = 0; npc.vz = 0; npc.vy = 0;
+                    npc.mesh.rotation.x = 0; npc.mesh.rotation.z = 0;
+                    npc.mesh.position.set(npc.x, 0, npc.z);
+                }
+            } else {
+                const nx = Math.max(-10.2, Math.min(10.2, npc.x + (npc.vx || 0) * dt));
+                const nz = Math.max(-8.2, Math.min(8.2, npc.z + (npc.vz || 0) * dt));
+                if (this.checkCollision3D(nx, npc.z)) npc.vx = -(npc.vx || 0);
+                else npc.x = nx;
+                if (this.checkCollision3D(npc.x, nz)) npc.vz = -(npc.vz || 0);
+                else npc.z = nz;
+                const speed = Math.hypot(npc.vx || 0, npc.vz || 0);
+                if (speed > 0.05) {
+                    npc.walkPhase = (npc.walkPhase || 0) + dt * 7;
+                    npc.mesh.rotation.y = Math.atan2(npc.vx, npc.vz);
+                }
+                npc.rig.legL.rotation.x = speed > 0.05 ? Math.sin(npc.walkPhase) * 0.45 : 0;
+                npc.rig.legR.rotation.x = speed > 0.05 ? -Math.sin(npc.walkPhase) * 0.45 : 0;
+                npc.mesh.position.set(npc.x, 0, npc.z);
+            }
+        }
+
+        if (this.batSwingTimer > 0) {
+            this.batSwingTimer = Math.max(0, this.batSwingTimer - dt);
+            this.handBatGroup.visible = this.hasBat;
+            const swingProgress = 1 - this.batSwingTimer / 0.38;
+            const swingArc = Math.sin(swingProgress * Math.PI);
+            this.handBatGroup.position.set(0.38 - swingArc * 0.28, -0.36 + swingArc * 0.14, -0.58 - swingArc * 0.25);
+            this.handBatGroup.rotation.set(0.35 - swingArc * 1.15, -0.2 + swingArc * 0.85, 0.25 - swingArc * 0.7);
+        } else if (this.hasBat) {
+            this.handBatGroup.visible = true;
+            this.handBatGroup.position.set(0.38, -0.36, -0.58);
+            this.handBatGroup.rotation.set(0.35, -0.2, 0.25);
+        }
 
         if (window.mpSync) {
             window.mpSync.pushMyState({
@@ -2828,148 +3463,39 @@ class Casino3DGame {
                 ragdoll: this.remoteBatEvent, batEvent: this.remoteBatEvent
             });
         }
-
-        if (this.hasBat) {
-            if (this.batSwingTimer > 0) {
-                this.batSwingTimer = Math.max(0, this.batSwingTimer - dt);
-                const t = 1 - (this.batSwingTimer / 0.38), swing = Math.sin(t * Math.PI);
-                this.handBatGroup.rotation.x = 0.35 - swing * 1.45;
-                this.handBatGroup.rotation.z = 0.25 + swing * 0.85;
-                this.handBatGroup.position.z = -0.58 - swing * 0.25;
-            } else {
-                this.handBatGroup.rotation.x = 0.35 + Math.sin(this.player.bobPhase * 0.5) * 0.04;
-                this.handBatGroup.rotation.z = 0.25; this.handBatGroup.position.z = -0.58;
-            }
-        }
-
-        for (const avatar of Object.values(this.remoteAvatarMeshes)) {
-            if (!avatar || avatar.userData.floor !== this.currentFloor) continue;
-            const ud = avatar.userData;
-            const rig = ud.rig;
-
-            if ((ud.ragdollTimer || 0) > 0) {
-                ud.ragdollTimer = Math.max(0, ud.ragdollTimer - dt);
-                ud.ragdollVy = (ud.ragdollVy || 0) - 16.5 * dt;
-                const nextX = Math.max(-10.5, Math.min(10.5, avatar.position.x + (ud.ragdollVx || 0) * dt));
-                const nextZ = Math.max(-8.5, Math.min(8.5, avatar.position.z + (ud.ragdollVz || 0) * dt));
-                if (!this.checkCollision3D(nextX, avatar.position.z)) avatar.position.x = nextX;
-                else ud.ragdollVx = -(ud.ragdollVx || 0) * 0.35;
-                if (!this.checkCollision3D(avatar.position.x, nextZ)) avatar.position.z = nextZ;
-                else ud.ragdollVz = -(ud.ragdollVz || 0) * 0.35;
-
-                let nextY = (avatar.position.y || 0) + ud.ragdollVy * dt;
-                if (nextY <= 0.25 && ud.ragdollVy < 0) {
-                    nextY = 0.25;
-                    ud.ragdollVy = -ud.ragdollVy * 0.38;
-                    ud.ragdollVx = (ud.ragdollVx || 0) * 0.72;
-                    ud.ragdollVz = (ud.ragdollVz || 0) * 0.72;
-                    sound.penguinBounce();
-                }
-                avatar.position.y = nextY;
-                avatar.rotation.x += (ud.ragdollSpinX || 7.5) * dt;
-                avatar.rotation.y += (ud.ragdollSpinY || 5.0) * dt;
-                avatar.rotation.z = (ud.ragdollRollDir || 1) * Math.sin((1 - ud.ragdollTimer / Math.max(0.1, ud.ragdollDuration || 1.35)) * Math.PI) * 1.15;
-                ud.ragdollVx *= Math.exp(-2.4 * dt);
-                ud.ragdollVz *= Math.exp(-2.4 * dt);
-
-                if (rig) {
-                    const flail = Math.sin(performance.now() * 0.025) * 0.9;
-                    rig.armL.rotation.x = -1.1 + flail;
-                    rig.armR.rotation.x = -1.1 - flail;
-                    rig.legL.rotation.x = 0.65 - flail * 0.5;
-                    rig.legR.rotation.x = 0.65 + flail * 0.5;
-                }
-
-                if (ud.ragdollTimer === 0) {
-                    avatar.position.y = 0;
-                    avatar.rotation.x = 0;
-                    avatar.rotation.z = 0;
-                    ud.targetX = avatar.position.x;
-                    ud.targetZ = avatar.position.z;
-                }
-                continue;
-            }
-
-            if ((ud.jumpHeight || 0) > 0 || (ud.jumpVy || 0) > 0) {
-                ud.jumpVy = (ud.jumpVy || 0) - 16.5 * dt;
-                ud.jumpHeight = Math.max(0, (ud.jumpHeight || 0) + ud.jumpVy * dt);
-                if (ud.jumpHeight === 0 && ud.jumpVy < 0) ud.jumpVy = 0;
-            }
-
-            const oldX = avatar.position.x, oldZ = avatar.position.z;
-            const blend = 1 - Math.exp(-12 * dt);
-            avatar.position.x += (ud.targetX - avatar.position.x) * blend;
-            avatar.position.z += (ud.targetZ - avatar.position.z) * blend;
-            let angleDelta = ((ud.targetYaw - avatar.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-            avatar.rotation.y += angleDelta * (1 - Math.exp(-14 * dt));
-            const moved = Math.hypot(ud.targetX - avatar.position.x, ud.targetZ - avatar.position.z) > 0.025 || Math.hypot(avatar.position.x - oldX, avatar.position.z - oldZ) > 0.002;
-            if (moved) ud.walkPhase += dt * 10;
-            const walk = moved ? Math.sin(ud.walkPhase) * 0.62 : 0;
-            if (rig) {
-                rig.legL.rotation.x += (walk - rig.legL.rotation.x) * Math.min(1, dt * 14);
-                rig.legR.rotation.x += (-walk - rig.legR.rotation.x) * Math.min(1, dt * 14);
-                rig.armL.rotation.x += (-walk * 0.35 - rig.armL.rotation.x) * Math.min(1, dt * 10);
-                rig.armR.rotation.x += (walk * 0.35 - rig.armR.rotation.x) * Math.min(1, dt * 10);
-                if (rig.remoteBat) rig.remoteBat.rotation.z = ud.swingTime > 0 ? -0.18 - Math.sin((1 - ud.swingTime / 0.38) * Math.PI) * 1.05 : -0.18;
-            }
-            const walkBob = moved ? Math.abs(Math.sin(ud.walkPhase * 2)) * 0.045 : 0;
-            avatar.position.y = (ud.jumpHeight || 0) + walkBob;
-            if (ud.swingTime > 0) ud.swingTime = Math.max(0, ud.swingTime - dt);
-        }
-
-        for (const npc of this.npcs) {
-            if (npc.ragdollTimer > 0) {
-                npc.ragdollTimer -= dt; npc.vy -= 16.5 * dt;
-                npc.x += npc.vx * dt; npc.y += npc.vy * dt; npc.z += npc.vz * dt;
-                npc.rx += npc.vrx * dt; npc.rz += npc.vrz * dt; npc.mesh.rotation.y += npc.vry * dt;
-                if (npc.y <= 0.35 && npc.vy < 0) {
-                    npc.y = 0.35; npc.vy = -npc.vy * 0.42; sound.penguinBounce();
-                    npc.vx *= 0.78; npc.vz *= 0.78;
-                }
-                npc.mesh.position.set(npc.x, npc.y, npc.z);
-                npc.mesh.rotation.x = npc.rx; npc.mesh.rotation.z = npc.rz;
-                if (npc.ragdollTimer <= 0) {
-                    npc.y = 0; npc.rx = 0; npc.rz = 0;
-                    npc.mesh.position.y = 0; npc.mesh.rotation.set(0, npc.mesh.rotation.y, 0);
-                    npc.vx = (Math.random() - 0.5) * 2.2; npc.vz = (Math.random() - 0.5) * 2.2;
-                }
-            } else {
-                if (Math.random() < 0.015) { npc.vx = (Math.random() - 0.5) * 2.2; npc.vz = (Math.random() - 0.5) * 2.2; }
-                npc.x += npc.vx * dt; npc.z += npc.vz * dt;
-                if (npc.x < -10 || npc.x > 10) { npc.vx *= -1; npc.x = Math.max(-10, Math.min(10, npc.x)); }
-                if (npc.z < -7 || npc.z > 8) { npc.vz *= -1; npc.z = Math.max(-7, Math.min(8, npc.z)); }
-                npc.walkPhase += dt * 8;
-                npc.rig.legL.rotation.x = Math.sin(npc.walkPhase) * 0.45;
-                npc.rig.legR.rotation.x = -Math.sin(npc.walkPhase) * 0.45;
-                npc.mesh.rotation.y = Math.atan2(npc.vx, npc.vz);
-                npc.mesh.position.set(npc.x, 0, npc.z);
-            }
-        }
-    }
-
-    checkCollision3D(px, pz) {
-        for (const obj of this.sceneObjects) {
-            if (obj.type === 'bat_pickup') continue;
-            if (Math.abs(px - obj.x) < 1.25 && Math.abs(pz - obj.z) < 1.05) return true;
-        }
-        return false;
     }
 
     loop(now) {
-        const dt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
-        this.lastFrameTime = now;
-        this.update(dt);
-        if (window.mpSync && this.state === 'PLAYING' && now - this.lastVisitorSnapshotAt > 450) {
-            this.lastVisitorSnapshotAt = now;
-            window.mpSync.sendWorldPacket({
-                type: 'visitorSnapshot', floor: this.currentFloor,
-                visitors: this.npcs.map(n => ({
-                    x: n.x, z: n.z, y: n.y, vx: n.vx, vz: n.vz, vy: n.vy,
-                    ragdollTimer: n.ragdollTimer, rx: n.rx, rz: n.rz
-                }))
-            });
+        const frameTime = typeof now === 'number' ? now : performance.now();
+        const dt = Math.min(0.05, Math.max(0.001, (frameTime - (this.lastFrameTime || frameTime)) / 1000));
+        this.lastFrameTime = frameTime;
+        try {
+            this.update(dt);
+            if (window.mpSync && this.state === 'PLAYING' && !window.mpSync.hasAuthoritativeServer() && frameTime - this.lastVisitorSnapshotAt > 450) {
+                this.lastVisitorSnapshotAt = frameTime;
+                window.mpSync.sendWorldPacket({
+                    type: 'visitorSnapshot',
+                    floor: this.currentFloor,
+                    visitors: this.npcs.map((n, idx) => ({
+                        id: idx + 1,
+                        x: n.x,
+                        z: n.z,
+                        y: n.y || 0,
+                        vx: n.vx || 0,
+                        vz: n.vz || 0,
+                        vy: n.vy || 0,
+                        ragdollTimer: n.ragdollTimer || 0,
+                        rx: n.rx || 0,
+                        rz: n.rz || 0
+                    }))
+                });
+            }
+        } catch (err) {
+            console.warn('Frame update fallback:', err);
         }
-        this.renderer.render(this.scene, this.camera);
+        if (this.renderer && this.scene && this.camera) {
+            this.renderer.render(this.scene, this.camera);
+        }
         requestAnimationFrame((t) => this.loop(t));
     }
 }
@@ -3038,9 +3564,8 @@ window.onload = function () {
 };
 </script>
 <script>
-if (!window.game && typeof Casino3DGame !== 'undefined') {
-    window.game = new Casino3DGame();
-}
+window.game = window.game || (typeof Casino3DGame !== 'undefined' ? new Casino3DGame() : null);
+var game = window.game;
 </script>
 </body>
 </html>
