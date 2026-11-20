@@ -1607,12 +1607,11 @@ class Casino3DGame {
         const selfId = String(window.myUid || (typeof myUid !== 'undefined' ? myUid : '') || '');
         const pktTarget = String(packet.targetUid || '');
         const pktSender = String(packet.uid || '');
-        // Если пакет пришёл не от нас, то для второго клиента в паре (1-на-1) или при совпадении targetUid это удар по нам
         const avatarCount = Object.keys(this.remoteAvatarMeshes || {}).length;
         const isMeTarget = Boolean(
             (selfId && pktTarget && pktTarget === selfId) ||
             (!pktTarget && pktSender && selfId && pktSender !== selfId) ||
-            (pktSender && selfId && pktSender !== selfId && avatarCount <= 1 && !this.remoteAvatarMeshes[pktTarget])
+            (pktSender && selfId && pktSender !== selfId && avatarCount <= 1)
         );
 
         if (isMeTarget) {
@@ -2903,9 +2902,19 @@ class Casino3DGame {
         this.camera.rotation.y = input.yaw;
         this.camera.rotation.x = Math.max(-0.78, Math.min(0.78, input.pitch - pitchTilt));
         this.camera.rotation.z = this.playerKnockback.roll;
+
+        if (this.hasBat) {
+            if (this.batSwingTimer > 0) {
+                this.batSwingTimer = Math.max(0, this.batSwingTimer - dt);
+                const swingProg = 1 - (this.batSwingTimer / 0.38);
+                const swingWave = Math.sin(swingProg * Math.PI);
+                this.handBatGroup.rotation.x = 0.35 - swingWave * 1.15;
+                this.handBatGroup.rotation.z = 0.25 + swingWave * 0.9;
+                this.handBatGroup.position.z = -0.58 - swingWave * 0.14;
             } else {
                 this.handBatGroup.rotation.x = 0.35 + Math.sin(this.player.bobPhase * 0.5) * 0.04;
-                this.handBatGroup.rotation.z = 0.25; this.handBatGroup.position.z = -0.58;
+                this.handBatGroup.rotation.z = 0.25;
+                this.handBatGroup.position.z = -0.58;
             }
         }
 
@@ -3105,8 +3114,9 @@ window.onload = function () {
 };
 </script>
 <script>
-if (!window.game && typeof Casino3DGame !== 'undefined') {
-    window.game = new Casino3DGame();
+var game = window.game || (typeof Casino3DGame !== 'undefined' ? new Casino3DGame() : null);
+if (game && !window.game) {
+    window.game = game;
 }
 </script>
 </body>
