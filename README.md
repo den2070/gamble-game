@@ -1,2 +1,2 @@
 # gamble-game
-gamble game aviable on 
+gamble game aviable on https://gamblerzz.vercel.app/
