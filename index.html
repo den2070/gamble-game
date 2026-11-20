@@ -83,14 +83,18 @@
     </div>
 
     <!-- Мобильный джойстик -->
-    <div id="mobileJoystickArea" class="hidden fixed w-52 h-52 z-20 pointer-events-auto touch-none flex items-center justify-center" style="left: max(8px, env(safe-area-inset-left)); bottom: max(136px, env(safe-area-inset-bottom));">
-        <div id="joystickBase" class="relative w-28 h-28 rounded-full bg-zinc-800/40 border-2 border-zinc-600/60 backdrop-blur-sm flex items-center justify-center opacity-85">
+    <div id="mobileJoystickArea" class="hidden fixed w-44 h-44 z-20 pointer-events-auto touch-none flex items-center justify-center" style="left: max(12px, env(safe-area-inset-left)); bottom: max(16px, env(safe-area-inset-bottom));">
+        <div id="joystickBase" class="relative w-28 h-28 rounded-full bg-zinc-800/45 border-2 border-zinc-600/70 backdrop-blur-sm flex items-center justify-center opacity-90">
             <div id="joystickStick" class="absolute w-12 h-12 rounded-full bg-amber-500/90 border-2 border-amber-200 shadow-lg transition-transform duration-75"></div>
         </div>
     </div>
 
-    <!-- Мобильные кнопки прыжка и биты -->
-    <div id="mobileControls" class="hidden fixed bottom-40 right-5 z-20 flex flex-col gap-3 items-end pointer-events-auto">
+    <!-- Мобильные кнопки прыжка, биты и чата -->
+    <div id="mobileControls" class="hidden fixed bottom-5 right-4 z-20 flex flex-col gap-3 items-end pointer-events-auto">
+        <button id="mobileChatBtn" onclick="game.toggleMobileChat()"
+            class="px-3.5 py-2.5 rounded-full bg-zinc-900/95 text-amber-300 font-bold text-xs shadow-lg border-2 border-amber-400/70 flex items-center gap-1.5 active:scale-95">
+            💬 Чат
+        </button>
         <button id="mobileJumpBtn" onclick="game.triggerJump()"
             class="w-13 h-13 px-3.5 py-3 rounded-full bg-sky-600/90 text-white font-black text-sm shadow-lg border-2 border-sky-300 flex items-center justify-center active:scale-95">
             ⤒
@@ -105,10 +109,13 @@
     <div id="toastContainer" class="fixed top-24 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-none w-full max-w-md px-4"></div>
 
     <!-- Внутриигровой чат -->
-    <div id="chatBox" class="hidden fixed bottom-3 left-3 sm:bottom-4 sm:left-4 z-20 w-72 sm:w-80 bg-zinc-950/90 border border-zinc-700/80 rounded-2xl shadow-2xl overflow-hidden pointer-events-auto backdrop-blur-sm">
+    <div id="chatBox" class="hidden fixed bottom-3 left-3 sm:bottom-4 sm:left-4 z-30 w-72 sm:w-80 bg-zinc-950/95 border border-zinc-700/80 rounded-2xl shadow-2xl overflow-hidden pointer-events-auto backdrop-blur-sm">
         <div class="flex items-center justify-between px-3 py-1.5 bg-zinc-900 border-b border-zinc-800 text-[11px] font-bold text-amber-300">
             <span>💬 ЧАТ КОМНАТЫ</span>
-            <span class="text-[10px] text-zinc-400 font-mono-num">[T]</span>
+            <div class="flex items-center gap-2">
+                <span class="hidden sm:inline text-[10px] text-zinc-400 font-mono-num">[T]</span>
+                <button onclick="game.closeMobileChat()" class="sm:hidden text-zinc-400 hover:text-white font-bold px-1">✕</button>
+            </div>
         </div>
         <div id="chatMessages" class="h-24 max-h-24 overflow-y-auto px-3 py-2 space-y-1 text-xs"></div>
         <div class="flex items-center gap-1.5 p-2 bg-zinc-900/90 border-t border-zinc-800">
@@ -283,6 +290,8 @@ window.mpSync = {
         if (msg.type === 'state') {
             this.localPeers[msg.uid] = { ...msg.state, updatedAt: Date.now() };
             this.flushLocalPeers();
+        } else if (msg.type === 'playerJump' && window.game) {
+            window.game.applyRemotePlayerJump(msg);
         } else if (msg.type === 'machineAction' && window.game) {
             window.game.applyRemoteMachineAction(msg.machineId, msg.actionIndex, msg.seed);
         } else if (msg.type === 'visitorSnapshot' && window.game) {
@@ -451,6 +460,8 @@ window.mpSync = {
             x: Number(state.x.toFixed(2)),
             y: Number((state.y || 0).toFixed(2)),
             z: Number(state.z.toFixed(2)),
+            vy: Number((state.vy || 0).toFixed(2)),
+            jumping: !!state.jumping,
             yaw: Number(state.yaw.toFixed(2)),
             floor: state.floor,
             hasBat: !!state.hasBat,
@@ -1266,7 +1277,10 @@ class Casino3DGame {
         document.getElementById('mobileBatBtn').classList.add('hidden');
 
         const chatBox = document.getElementById('chatBox');
-        if (chatBox) chatBox.classList.remove('hidden');
+        if (chatBox) {
+            if (isTouchDevice) chatBox.classList.add('hidden');
+            else chatBox.classList.remove('hidden');
+        }
         const chatMsgs = document.getElementById('chatMessages');
         if (chatMsgs) chatMsgs.innerHTML = '';
 
@@ -1284,8 +1298,26 @@ class Casino3DGame {
     focusChatInput() {
         const inp = document.getElementById('chatInput');
         if (!inp) return;
+        const chatBox = document.getElementById('chatBox');
+        if (chatBox && chatBox.classList.contains('hidden')) chatBox.classList.remove('hidden');
         input.unlockPointer();
         inp.focus();
+    }
+
+    toggleMobileChat() {
+        const chatBox = document.getElementById('chatBox');
+        if (!chatBox) return;
+        const willOpen = chatBox.classList.contains('hidden');
+        chatBox.classList.toggle('hidden', !willOpen);
+        if (willOpen) {
+            const inp = document.getElementById('chatInput');
+            if (inp) setTimeout(() => inp.focus(), 50);
+        }
+    }
+
+    closeMobileChat() {
+        const chatBox = document.getElementById('chatBox');
+        if (chatBox) chatBox.classList.add('hidden');
     }
 
     sendChatMessage() {
@@ -1298,7 +1330,9 @@ class Casino3DGame {
         if (window.mpSync && typeof window.mpSync.sendChatMessage === 'function') {
             window.mpSync.sendChatMessage(this.playerName, text);
         }
-        if (!isTouchDevice && this.state === 'PLAYING' && !this.activeModal) {
+        if (isTouchDevice) {
+            this.closeMobileChat();
+        } else if (this.state === 'PLAYING' && !this.activeModal) {
             inp.blur();
             input.lockPointer();
         }
@@ -1325,8 +1359,44 @@ class Casino3DGame {
         if (this.state !== 'PLAYING' || this.activeModal) return;
         if ((this.player.jumpHeight || 0) <= 0.01 && (this.player.vy || 0) <= 0.01) {
             this.player.vy = 6.4;
+            this.player.jumpHeight = Math.max(this.player.jumpHeight || 0, 0.05);
             sound.step();
+            if (window.mpSync) {
+                window.mpSync.sendWorldPacket({
+                    type: 'playerJump',
+                    floor: this.currentFloor,
+                    x: Number(this.player.x.toFixed(2)),
+                    y: Number(this.player.jumpHeight.toFixed(2)),
+                    z: Number(this.player.z.toFixed(2)),
+                    vy: this.player.vy
+                });
+                window.mpSync.pushMyState({
+                    name: this.playerName,
+                    x: this.player.x,
+                    y: this.player.jumpHeight,
+                    z: this.player.z,
+                    vy: this.player.vy,
+                    jumping: true,
+                    yaw: input.yaw,
+                    floor: this.currentFloor,
+                    hasBat: this.hasBat,
+                    ragdoll: this.remoteBatEvent,
+                    batEvent: this.remoteBatEvent
+                });
+            }
         }
+    }
+
+    applyRemotePlayerJump(packet) {
+        const selfId = typeof myUid !== 'undefined' ? myUid : null;
+        if (!packet || !packet.uid || (selfId && packet.uid === selfId)) return;
+        if (packet.floor && packet.floor !== this.currentFloor) return;
+        const avatar = this.remoteAvatarMeshes[packet.uid];
+        if (!avatar) return;
+        avatar.userData.jumpHeight = Math.max(avatar.userData.jumpHeight || 0, Number(packet.y) || 0.12);
+        avatar.userData.jumpVy = Number(packet.vy) || 6.4;
+        if (Number.isFinite(Number(packet.x))) avatar.userData.targetX = Number(packet.x);
+        if (Number.isFinite(Number(packet.z))) avatar.userData.targetZ = Number(packet.z);
     }
 
     resetPlayerPosition() {
@@ -1495,16 +1565,19 @@ class Casino3DGame {
     startRemoteAvatarRagdoll(uid, data) {
         const avatar = this.remoteAvatarMeshes[uid];
         if (!avatar || !data) return;
-        avatar.userData.ragdollTimer = data.duration || 1.35;
-        avatar.userData.ragdollDuration = data.duration || 1.35;
+        const dur = Number(data.duration) || 1.35;
+        avatar.userData.ragdollTimer = dur;
+        avatar.userData.ragdollDuration = dur;
         avatar.userData.ragdollVx = Number(data.vx) || 0;
         avatar.userData.ragdollVz = Number(data.vz) || 0;
         avatar.userData.ragdollVy = Number(data.vy) || 6.4;
         avatar.userData.ragdollSpinX = (Math.random() * 6 + 6) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollSpinY = (Math.random() * 8 + 4) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollRollDir = Math.random() < 0.5 ? -1 : 1;
-        avatar.userData.targetX = Number.isFinite(Number(data.endX)) ? Number(data.endX) : avatar.position.x;
-        avatar.userData.targetZ = Number.isFinite(Number(data.endZ)) ? Number(data.endZ) : avatar.position.z;
+        avatar.userData.ragdollGoalX = Number.isFinite(Number(data.endX)) ? Number(data.endX) : avatar.position.x;
+        avatar.userData.ragdollGoalZ = Number.isFinite(Number(data.endZ)) ? Number(data.endZ) : avatar.position.z;
+        avatar.userData.targetX = avatar.userData.ragdollGoalX;
+        avatar.userData.targetZ = avatar.userData.ragdollGoalZ;
     }
 
     applyRemotePlayerRagdoll(packet) {
@@ -1513,25 +1586,25 @@ class Casino3DGame {
         this.lastRemoteRagdollEventId = packet.eventId;
         if (packet.floor && packet.floor !== this.currentFloor) return;
 
-        if (packet.targetUid === myUid) {
+        const selfId = typeof myUid !== 'undefined' ? myUid : null;
+        if (selfId && packet.targetUid === selfId) {
             const kb = this.playerKnockback;
             kb.x = Number(packet.vx) || 0;
             kb.z = Number(packet.vz) || 0;
             kb.vy = Number(packet.vy) || 6.6;
-            kb.height = Math.max(kb.height, 0.18);
-            kb.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 13.5;
+            kb.height = Math.max(kb.height, 0.22);
+            kb.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 14.0;
             this.player.jumpHeight = kb.height;
             this.player.vy = kb.vy;
-            if (Number.isFinite(Number(packet.endX))) {
-                const clampedEndX = Math.max(-10.5, Math.min(10.5, Number(packet.endX)));
-                if (!this.checkCollision3D(clampedEndX, this.player.z)) {
-                    this.player.x = Number((this.player.x + (clampedEndX - this.player.x) * 0.25).toFixed(2));
-                }
-            }
-            if (Number.isFinite(Number(packet.endZ))) {
-                const clampedEndZ = Math.max(-8.5, Math.min(8.5, Number(packet.endZ)));
-                if (!this.checkCollision3D(this.player.x, clampedEndZ)) {
-                    this.player.z = Number((this.player.z + (clampedEndZ - this.player.z) * 0.25).toFixed(2));
+            if (Number.isFinite(Number(packet.endX)) && Number.isFinite(Number(packet.endZ))) {
+                const gx = Math.max(-10.5, Math.min(10.5, Number(packet.endX)));
+                const gz = Math.max(-8.5, Math.min(8.5, Number(packet.endZ)));
+                const dx = gx - this.player.x;
+                const dz = gz - this.player.z;
+                const travelTime = Math.max(0.25, Number(packet.duration) || 1.1);
+                if (Math.hypot(dx, dz) > 0.1) {
+                    kb.x = dx / travelTime;
+                    kb.z = dz / travelTime;
                 }
             }
             sound.batHit();
@@ -2611,6 +2684,12 @@ class Casino3DGame {
             avatar.userData.targetZ = Number(p.z) || 0;
             avatar.userData.targetYaw = (Number(p.yaw) || 0) + Math.PI;
             avatar.userData.floor = p.floor;
+            if ((p.jumping || (Number(p.y) || 0) > 0.05) && !(avatar.userData.ragdollTimer > 0)) {
+                avatar.userData.jumpHeight = Math.max(avatar.userData.jumpHeight || 0, Number(p.y) || 0.15);
+                if (Number.isFinite(Number(p.vy)) && Number(p.vy) > 0.2) {
+                    avatar.userData.jumpVy = Number(p.vy);
+                }
+            }
             const rig = avatar.userData.rig;
             if (rig && rig.remoteBat) rig.remoteBat.visible = !!p.hasBat;
 
@@ -2619,7 +2698,7 @@ class Casino3DGame {
                 if (p.ragdoll.floor === this.currentFloor) {
                     if (p.ragdoll.targetUid === uid) {
                         this.startRemoteAvatarRagdoll(uid, p.ragdoll);
-                    } else if (p.ragdoll.targetUid === myUid) {
+                    } else if (typeof myUid !== 'undefined' && p.ragdoll.targetUid === myUid) {
                         this.applyRemotePlayerRagdoll(p.ragdoll);
                     }
                 }
@@ -2629,7 +2708,7 @@ class Casino3DGame {
             if (event && event.id && avatar.userData.lastBatEventId !== event.id) {
                 avatar.userData.lastBatEventId = event.id;
                 if (event.floor === this.currentFloor) avatar.userData.swingTime = 0.38;
-                if (event.targetUid === myUid && event.floor === this.currentFloor) {
+                if (typeof myUid !== 'undefined' && event.targetUid === myUid && event.floor === this.currentFloor) {
                     this.applyRemotePlayerRagdoll(event);
                 }
             }
@@ -2691,7 +2770,7 @@ class Casino3DGame {
             const nz = Math.max(-8.8, Math.min(8.8, this.player.z + kb.z * dt));
             if (!this.checkCollision3D(nx, this.player.z)) this.player.x = nx; else kb.x *= -0.35;
             if (!this.checkCollision3D(this.player.x, nz)) this.player.z = nz; else kb.z *= -0.35;
-            const drag = Math.exp(-2.2 * dt);
+            const drag = Math.exp(-2.4 * dt);
             kb.x *= drag; kb.z *= drag;
             kb.vy -= 15.5 * dt;
             kb.height += kb.vy * dt;
@@ -2710,6 +2789,7 @@ class Casino3DGame {
             if (Math.abs(kb.roll) < 0.015 && Math.abs(kb.rollVelocity) < 0.03) {
                 kb.roll = 0; kb.rollVelocity = 0;
             }
+            this.player.jumpHeight = Math.max(this.player.jumpHeight || 0, kb.height);
         }
 
         this.playerMoveSpeed = 0;
@@ -2735,12 +2815,15 @@ class Casino3DGame {
 
         const totalAirHeight = Math.max(this.playerKnockback.height, this.player.jumpHeight || 0);
         const headBob = totalAirHeight > 0.02 ? 0 : Math.sin(this.player.bobPhase) * 0.045;
-        this.camera.position.set(this.player.x, this.player.y + totalAirHeight + headBob, this.player.z);
+        const fallDrop = this.playerKnockback.height > 0 ? Math.min(0.65, Math.abs(this.playerKnockback.roll) * 0.25) : 0;
+        this.camera.position.set(this.player.x, Math.max(0.55, this.player.y + totalAirHeight + headBob - fallDrop), this.player.z);
         this.camera.rotation.y = input.yaw; this.camera.rotation.x = input.pitch; this.camera.rotation.z = this.playerKnockback.roll;
 
         if (window.mpSync) {
             window.mpSync.pushMyState({
                 name: this.playerName, x: this.player.x, y: totalAirHeight, z: this.player.z,
+                vy: Math.max(this.player.vy || 0, this.playerKnockback.vy || 0),
+                jumping: totalAirHeight > 0.05,
                 yaw: input.yaw, floor: this.currentFloor, hasBat: this.hasBat,
                 ragdoll: this.remoteBatEvent, batEvent: this.remoteBatEvent
             });
@@ -2807,6 +2890,12 @@ class Casino3DGame {
                 continue;
             }
 
+            if ((ud.jumpHeight || 0) > 0 || (ud.jumpVy || 0) > 0) {
+                ud.jumpVy = (ud.jumpVy || 0) - 16.5 * dt;
+                ud.jumpHeight = Math.max(0, (ud.jumpHeight || 0) + ud.jumpVy * dt);
+                if (ud.jumpHeight === 0 && ud.jumpVy < 0) ud.jumpVy = 0;
+            }
+
             const oldX = avatar.position.x, oldZ = avatar.position.z;
             const blend = 1 - Math.exp(-12 * dt);
             avatar.position.x += (ud.targetX - avatar.position.x) * blend;
@@ -2823,7 +2912,8 @@ class Casino3DGame {
                 rig.armR.rotation.x += (walk * 0.35 - rig.armR.rotation.x) * Math.min(1, dt * 10);
                 if (rig.remoteBat) rig.remoteBat.rotation.z = ud.swingTime > 0 ? -0.18 - Math.sin((1 - ud.swingTime / 0.38) * Math.PI) * 1.05 : -0.18;
             }
-            avatar.position.y = moved ? Math.abs(Math.sin(ud.walkPhase * 2)) * 0.045 : 0;
+            const walkBob = moved ? Math.abs(Math.sin(ud.walkPhase * 2)) * 0.045 : 0;
+            avatar.position.y = (ud.jumpHeight || 0) + walkBob;
             if (ud.swingTime > 0) ud.swingTime = Math.max(0, ud.swingTime - dt);
         }
 
@@ -2943,8 +3033,14 @@ const game = new Casino3DGame();
 window.game = game; window.sound = sound; window.input = input;
 
 window.onload = function () {
+    if (!window.game) window.game = game;
     requestAnimationFrame((t) => game.loop(t));
 };
+</script>
+<script>
+if (!window.game && typeof Casino3DGame !== 'undefined') {
+    window.game = new Casino3DGame();
+}
 </script>
 </body>
 </html>
