@@ -210,6 +210,7 @@ const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-casino-3d';
 let db = null;
 let auth = null;
 let myUid = 'player_' + Math.random().toString(36).slice(2, 10);
+window.myUid = myUid;
 
 async function initMultiplayer() {
     try {
@@ -223,7 +224,10 @@ async function initMultiplayer() {
             } else {
                 await signInAnonymously(auth);
             }
-            if (auth.currentUser) myUid = auth.currentUser.uid;
+            if (auth.currentUser) {
+                myUid = auth.currentUser.uid;
+                window.myUid = myUid;
+            }
         }
     } catch (e) {
         console.warn('Multiplayer offline fallback:', e);
@@ -257,7 +261,8 @@ window.mpSync = {
                 this.bc = new BroadcastChannel(`casino_room_${this.roomCode}`);
                 this.bc.onmessage = (ev) => {
                     const msg = ev.data;
-                    if (!msg || msg.uid === myUid) return;
+                    const selfId = window.myUid || myUid;
+                    if (!msg || msg.uid === selfId) return;
                     this.handleIncomingNetworkMessage(msg);
                 };
             }
@@ -327,7 +332,8 @@ window.mpSync = {
             ws.addEventListener('message', (event) => {
                 let msg;
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
-                if (!msg || msg.uid === myUid) return;
+                const selfId = window.myUid || myUid;
+                if (!msg || msg.uid === selfId) return;
                 this.handleIncomingNetworkMessage(msg);
             });
             ws.addEventListener('close', () => {
@@ -347,13 +353,15 @@ window.mpSync = {
     },
 
     sendPacket(packet) {
+        const activeUid = window.myUid || myUid;
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-            try { this.socket.send(JSON.stringify({ ...packet, uid: myUid, room: this.roomCode })); } catch (_) {}
+            try { this.socket.send(JSON.stringify({ ...packet, uid: activeUid, room: this.roomCode })); } catch (_) {}
         }
     },
 
     sendWorldPacket(packet) {
-        const msg = { ...packet, uid: myUid, room: this.roomCode };
+        const activeUid = window.myUid || myUid;
+        const msg = { ...packet, uid: activeUid, room: this.roomCode };
         this.sendPacket(packet);
         if (this.bc) { try { this.bc.postMessage(msg); } catch (_) {} }
         this.connections.forEach(c => { if (c.open) { try { c.send(msg); } catch (_) {} } });
@@ -428,7 +436,8 @@ window.mpSync = {
             }
         });
         conn.on('data', (msg) => {
-            if (!msg || msg.uid === myUid) return;
+            const selfId = window.myUid || myUid;
+            if (!msg || msg.uid === selfId) return;
             if (isHost) this.connections.forEach(c => { if (c !== conn && c.open) c.send(msg); });
             this.handleIncomingNetworkMessage(msg);
         });
@@ -469,13 +478,13 @@ window.mpSync = {
             batEvent: state.batEvent || null,
             updatedAt: now
         };
-
+        const selfId = window.myUid || myUid;
         if (this.bc) {
-            try { this.bc.postMessage({ type: 'state', uid: myUid, state: payload }); } catch (_) {}
+            try { this.bc.postMessage({ type: 'state', uid: selfId, state: payload }); } catch (_) {}
         }
         this.sendPacket({ type: 'state', state: payload });
         if (this.connections.length > 0) {
-            const pkt = { type: 'state', uid: myUid, state: payload };
+            const pkt = { type: 'state', uid: selfId, state: payload };
             this.connections.forEach(c => { if (c.open) { try { c.send(pkt); } catch (_) {} } });
         }
         if (!db) return;
@@ -924,7 +933,11 @@ class Casino3DGame {
         this.remoteBatEvent = null;
         this.batEventCounter = 0;
         this.lastVisitorSnapshotAt = 0;
-        this.playerKnockback = { x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0 };
+        this.playerKnockback = {
+            x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0,
+            timer: 0, duration: 1.35, elapsed: 0,
+            fromX: 0, fromZ: 0, goalX: null, goalZ: null
+        };
 
         this.handBatGroup = new THREE.Group();
         const batH = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.028, 0.35, 10), new THREE.MeshStandardMaterial({ color: 0x27272a }));
@@ -1388,7 +1401,7 @@ class Casino3DGame {
     }
 
     applyRemotePlayerJump(packet) {
-        const selfId = typeof myUid !== 'undefined' ? myUid : null;
+        const selfId = window.myUid || (typeof myUid !== 'undefined' ? myUid : null);
         if (!packet || !packet.uid || (selfId && packet.uid === selfId)) return;
         if (packet.floor && packet.floor !== this.currentFloor) return;
         const avatar = this.remoteAvatarMeshes[packet.uid];
@@ -1406,7 +1419,12 @@ class Casino3DGame {
         this.player.vy = 0;
         this.player.jumpHeight = 0;
         this.player.bobPhase = 0;
-        if (this.playerKnockback) Object.assign(this.playerKnockback, { x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0 });
+        if (this.playerKnockback) {
+            Object.assign(this.playerKnockback, {
+                x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0,
+                timer: 0, duration: 1.35, elapsed: 0, fromX: 0, fromZ: 0, goalX: null, goalZ: null
+            });
+        }
         input.yaw = 0;
         input.pitch = -0.04;
         if (this.camera) {
@@ -1584,36 +1602,80 @@ class Casino3DGame {
         if (!packet || !packet.eventId) return;
         if (this.lastRemoteRagdollEventId === packet.eventId) return;
         this.lastRemoteRagdollEventId = packet.eventId;
-        if (packet.floor && packet.floor !== this.currentFloor) return;
+        if (packet.floor && Number(packet.floor) !== Number(this.currentFloor)) return;
 
-        const selfId = typeof myUid !== 'undefined' ? myUid : null;
-        if (selfId && packet.targetUid === selfId) {
+        const selfId = String(window.myUid || (typeof myUid !== 'undefined' ? myUid : '') || '');
+        const pktTarget = String(packet.targetUid || '');
+        const pktSender = String(packet.uid || '');
+        // Если пакет пришёл не от нас, то для второго клиента в паре (1-на-1) или при совпадении targetUid это удар по нам
+        const avatarCount = Object.keys(this.remoteAvatarMeshes || {}).length;
+        const isMeTarget = Boolean(
+            (selfId && pktTarget && pktTarget === selfId) ||
+            (!pktTarget && pktSender && selfId && pktSender !== selfId) ||
+            (pktSender && selfId && pktSender !== selfId && avatarCount <= 1 && !this.remoteAvatarMeshes[pktTarget])
+        );
+
+        if (isMeTarget) {
             const kb = this.playerKnockback;
-            kb.x = Number(packet.vx) || 0;
-            kb.z = Number(packet.vz) || 0;
-            kb.vy = Number(packet.vy) || 6.6;
-            kb.height = Math.max(kb.height, 0.22);
-            kb.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 14.0;
+            const dur = Math.max(0.75, Number(packet.duration) || 1.35);
+            const startX = Number.isFinite(Number(packet.startX)) ? Number(packet.startX) : this.player.x;
+            const startZ = Number.isFinite(Number(packet.startZ)) ? Number(packet.startZ) : this.player.z;
+            const gx = Number.isFinite(Number(packet.endX))
+                ? Math.max(-10.2, Math.min(10.2, Number(packet.endX)))
+                : Math.max(-10.2, Math.min(10.2, startX + (Number(packet.vx) || 0) * 0.45));
+            const gz = Number.isFinite(Number(packet.endZ))
+                ? Math.max(-8.2, Math.min(8.2, Number(packet.endZ)))
+                : Math.max(-8.2, Math.min(8.2, startZ + (Number(packet.vz) || 0) * 0.45));
+
+            // Плавно подводим к стартовой точке без рывка, затем ведём видимый полёт/падение до gx, gz
+            this.player.x = Math.max(-10.2, Math.min(10.2, this.player.x * 0.35 + startX * 0.65));
+            this.player.z = Math.max(-8.2, Math.min(8.2, this.player.z * 0.35 + startZ * 0.65));
+
+            kb.fromX = this.player.x;
+            kb.fromZ = this.player.z;
+            kb.goalX = gx;
+            kb.goalZ = gz;
+            kb.duration = dur;
+            kb.elapsed = 0;
+            kb.timer = dur;
+            const dx = gx - kb.fromX;
+            const dz = gz - kb.fromZ;
+            const flightTime = Math.max(0.35, dur * 0.85);
+            kb.x = dx / flightTime;
+            kb.z = dz / flightTime;
+            kb.vy = Math.max(5.4, Number(packet.vy) || 6.8);
+            kb.height = Math.max(0.28, Number(packet.startY) || 0.28);
+            kb.roll = 0;
+            kb.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 9.5;
             this.player.jumpHeight = kb.height;
             this.player.vy = kb.vy;
-            if (Number.isFinite(Number(packet.endX)) && Number.isFinite(Number(packet.endZ))) {
-                const gx = Math.max(-10.5, Math.min(10.5, Number(packet.endX)));
-                const gz = Math.max(-8.5, Math.min(8.5, Number(packet.endZ)));
-                const dx = gx - this.player.x;
-                const dz = gz - this.player.z;
-                const travelTime = Math.max(0.25, Number(packet.duration) || 1.1);
-                if (Math.hypot(dx, dz) > 0.1) {
-                    kb.x = dx / travelTime;
-                    kb.z = dz / travelTime;
-                }
-            }
             sound.batHit();
-            if (packet.fallSummary) {
-                this.showToast(`💥 Вас ударили! ${packet.fallSummary}`, 'red');
-                this.appendChatMessage('РЕГДОЛЛ', `Вы получили удар: ${packet.fallSummary}`, false);
+
+            const summary = packet.fallSummary || `fall from ${this.player.x.toFixed(2)} 0.00 ${this.player.z.toFixed(2)} to ${gx.toFixed(2)} 0.00 ${gz.toFixed(2)}`;
+            this.showToast(`💥 Вас ударили! ${summary}`, 'red');
+            this.appendChatMessage('РЕГДОЛЛ', `Вы получили удар: ${summary}`, false);
+
+            if (window.mpSync) {
+                window.mpSync.lastSyncTime = 0;
+                window.mpSync.pushMyState({
+                    name: this.playerName,
+                    x: this.player.x,
+                    y: kb.height,
+                    z: this.player.z,
+                    vy: kb.vy,
+                    jumping: true,
+                    yaw: input.yaw,
+                    floor: this.currentFloor,
+                    hasBat: this.hasBat,
+                    ragdoll: { ...packet, targetUid: selfId || pktTarget, endX: gx, endZ: gz },
+                    batEvent: { ...packet, id: packet.eventId, targetUid: selfId || pktTarget, endX: gx, endZ: gz }
+                });
             }
         } else if (packet.targetUid && this.remoteAvatarMeshes[packet.targetUid]) {
             this.startRemoteAvatarRagdoll(packet.targetUid, packet);
+        } else if (pktSender && pktSender !== selfId) {
+            const matchingUid = Object.keys(this.remoteAvatarMeshes).find(u => u !== selfId);
+            if (matchingUid) this.startRemoteAvatarRagdoll(matchingUid, packet);
         }
     }
 
@@ -2680,11 +2742,14 @@ class Casino3DGame {
                 this.remotePlayersGroup.add(avatar);
                 this.remoteAvatarMeshes[uid] = avatar;
             }
-            avatar.userData.targetX = Number(p.x) || 0;
-            avatar.userData.targetZ = Number(p.z) || 0;
+            const isAvatarInRagdoll = (avatar.userData.ragdollTimer || 0) > 0;
+            if (!isAvatarInRagdoll) {
+                avatar.userData.targetX = Number(p.x) || 0;
+                avatar.userData.targetZ = Number(p.z) || 0;
+            }
             avatar.userData.targetYaw = (Number(p.yaw) || 0) + Math.PI;
             avatar.userData.floor = p.floor;
-            if ((p.jumping || (Number(p.y) || 0) > 0.05) && !(avatar.userData.ragdollTimer > 0)) {
+            if ((p.jumping || (Number(p.y) || 0) > 0.05) && !isAvatarInRagdoll) {
                 avatar.userData.jumpHeight = Math.max(avatar.userData.jumpHeight || 0, Number(p.y) || 0.15);
                 if (Number.isFinite(Number(p.vy)) && Number(p.vy) > 0.2) {
                     avatar.userData.jumpVy = Number(p.vy);
@@ -2693,23 +2758,21 @@ class Casino3DGame {
             const rig = avatar.userData.rig;
             if (rig && rig.remoteBat) rig.remoteBat.visible = !!p.hasBat;
 
-            if (p.ragdoll && p.ragdoll.eventId && avatar.userData.lastBatEventId !== p.ragdoll.eventId) {
-                avatar.userData.lastBatEventId = p.ragdoll.eventId;
-                if (p.ragdoll.floor === this.currentFloor) {
-                    if (p.ragdoll.targetUid === uid) {
-                        this.startRemoteAvatarRagdoll(uid, p.ragdoll);
-                    } else if (typeof myUid !== 'undefined' && p.ragdoll.targetUid === myUid) {
-                        this.applyRemotePlayerRagdoll(p.ragdoll);
-                    }
+            const ragPkt = p.ragdoll || p.batEvent;
+            if (ragPkt && ragPkt.eventId && avatar.userData.lastBatEventId !== ragPkt.eventId) {
+                avatar.userData.lastBatEventId = ragPkt.eventId;
+                if (p.batEvent && p.batEvent.id && Number(p.batEvent.floor) === Number(this.currentFloor)) {
+                    avatar.userData.swingTime = 0.38;
                 }
-            }
-
-            const event = p.batEvent;
-            if (event && event.id && avatar.userData.lastBatEventId !== event.id) {
-                avatar.userData.lastBatEventId = event.id;
-                if (event.floor === this.currentFloor) avatar.userData.swingTime = 0.38;
-                if (typeof myUid !== 'undefined' && event.targetUid === myUid && event.floor === this.currentFloor) {
-                    this.applyRemotePlayerRagdoll(event);
+                if (Number(ragPkt.floor) === Number(this.currentFloor)) {
+                    const selfId = String(window.myUid || (typeof myUid !== 'undefined' ? myUid : '') || '');
+                    if (selfId && ragPkt.targetUid && String(ragPkt.targetUid) === selfId) {
+                        this.applyRemotePlayerRagdoll(ragPkt);
+                    } else if (ragPkt.targetUid && this.remoteAvatarMeshes[ragPkt.targetUid]) {
+                        this.startRemoteAvatarRagdoll(ragPkt.targetUid, ragPkt);
+                    } else if (uid !== selfId) {
+                        this.startRemoteAvatarRagdoll(uid, ragPkt);
+                    }
                 }
             }
         }
@@ -2765,35 +2828,54 @@ class Casino3DGame {
         }
 
         const kb = this.playerKnockback;
-        if (Math.abs(kb.x) > 0.03 || Math.abs(kb.z) > 0.03 || kb.height > 0 || kb.vy > 0) {
-            const nx = Math.max(-10.8, Math.min(10.8, this.player.x + kb.x * dt));
-            const nz = Math.max(-8.8, Math.min(8.8, this.player.z + kb.z * dt));
+        if (kb.timer > 0) {
+            kb.timer = Math.max(0, kb.timer - dt);
+            kb.elapsed = (kb.elapsed || 0) + dt;
+        }
+        if (Math.abs(kb.x) > 0.03 || Math.abs(kb.z) > 0.03 || kb.height > 0 || kb.vy > 0 || kb.timer > 0) {
+            const flightRatio = Math.min(1, (kb.elapsed || 0) / Math.max(0.35, (kb.duration || 1.35) * 0.85));
+            let nx = this.player.x + kb.x * dt;
+            let nz = this.player.z + kb.z * dt;
+            if (kb.timer <= 0.25 && Number.isFinite(kb.goalX) && Number.isFinite(kb.goalZ)) {
+                nx = nx * 0.72 + kb.goalX * 0.28;
+                nz = nz * 0.72 + kb.goalZ * 0.28;
+            }
+            nx = Math.max(-10.5, Math.min(10.5, nx));
+            nz = Math.max(-8.5, Math.min(8.5, nz));
             if (!this.checkCollision3D(nx, this.player.z)) this.player.x = nx; else kb.x *= -0.35;
             if (!this.checkCollision3D(this.player.x, nz)) this.player.z = nz; else kb.z *= -0.35;
-            const drag = Math.exp(-2.4 * dt);
+
+            const drag = Math.exp(-1.55 * dt);
             kb.x *= drag; kb.z *= drag;
-            kb.vy -= 15.5 * dt;
+            kb.vy -= 14.5 * dt;
             kb.height += kb.vy * dt;
             if (kb.height <= 0) {
                 kb.height = 0;
-                if (kb.vy < -3.2) {
-                    kb.vy = -kb.vy * 0.35;
+                if (kb.vy < -2.6) {
+                    kb.vy = -kb.vy * 0.42;
                     sound.penguinBounce();
                 } else {
                     kb.vy = 0;
                 }
             }
+            const swingWave = Math.sin(flightRatio * Math.PI);
             kb.roll += kb.rollVelocity * dt;
-            kb.rollVelocity *= Math.exp(-(kb.height > 0 ? 2.1 : 8.5) * dt);
-            if (kb.height === 0) kb.roll *= Math.exp(-6.5 * dt);
-            if (Math.abs(kb.roll) < 0.015 && Math.abs(kb.rollVelocity) < 0.03) {
-                kb.roll = 0; kb.rollVelocity = 0;
+            kb.roll = Math.max(-0.85, Math.min(0.85, kb.roll + swingWave * 0.06 * Math.sign(kb.rollVelocity || 1)));
+            kb.rollVelocity *= Math.exp(-(kb.height > 0 ? 1.8 : 7.5) * dt);
+            if (kb.height === 0) kb.roll *= Math.exp(-5.5 * dt);
+
+            if (kb.timer === 0 && kb.height === 0 && Math.abs(kb.roll) < 0.02 && Math.abs(kb.rollVelocity) < 0.05) {
+                if (Number.isFinite(kb.goalX) && !this.checkCollision3D(kb.goalX, this.player.z)) this.player.x = kb.goalX;
+                if (Number.isFinite(kb.goalZ) && !this.checkCollision3D(this.player.x, kb.goalZ)) this.player.z = kb.goalZ;
+                kb.x = 0; kb.z = 0; kb.vy = 0; kb.height = 0; kb.roll = 0; kb.rollVelocity = 0;
+                kb.elapsed = 0; kb.goalX = null; kb.goalZ = null;
             }
-            this.player.jumpHeight = Math.max(this.player.jumpHeight || 0, kb.height);
+            this.player.jumpHeight = kb.height;
         }
 
         this.playerMoveSpeed = 0;
-        if (!this.activeModal) {
+        const isKnockedDown = (this.playerKnockback.timer || 0) > 0 || (this.playerKnockback.height || 0) > 0.05;
+        if (!this.activeModal && !isKnockedDown) {
             const axis = input.getMoveAxis();
             if (axis.turn !== 0) input.yaw += axis.turn * 2.2 * dt;
             const speed = this.player.baseSpeed * (this.perks.espresso ? 1.35 : 1);
@@ -2815,27 +2897,12 @@ class Casino3DGame {
 
         const totalAirHeight = Math.max(this.playerKnockback.height, this.player.jumpHeight || 0);
         const headBob = totalAirHeight > 0.02 ? 0 : Math.sin(this.player.bobPhase) * 0.045;
-        const fallDrop = this.playerKnockback.height > 0 ? Math.min(0.65, Math.abs(this.playerKnockback.roll) * 0.25) : 0;
+        const fallDrop = this.playerKnockback.height > 0 ? Math.min(0.55, Math.abs(this.playerKnockback.roll) * 0.22) : 0;
+        const pitchTilt = isKnockedDown ? Math.min(0.32, totalAirHeight * 0.14) : 0;
         this.camera.position.set(this.player.x, Math.max(0.55, this.player.y + totalAirHeight + headBob - fallDrop), this.player.z);
-        this.camera.rotation.y = input.yaw; this.camera.rotation.x = input.pitch; this.camera.rotation.z = this.playerKnockback.roll;
-
-        if (window.mpSync) {
-            window.mpSync.pushMyState({
-                name: this.playerName, x: this.player.x, y: totalAirHeight, z: this.player.z,
-                vy: Math.max(this.player.vy || 0, this.playerKnockback.vy || 0),
-                jumping: totalAirHeight > 0.05,
-                yaw: input.yaw, floor: this.currentFloor, hasBat: this.hasBat,
-                ragdoll: this.remoteBatEvent, batEvent: this.remoteBatEvent
-            });
-        }
-
-        if (this.hasBat) {
-            if (this.batSwingTimer > 0) {
-                this.batSwingTimer = Math.max(0, this.batSwingTimer - dt);
-                const t = 1 - (this.batSwingTimer / 0.38), swing = Math.sin(t * Math.PI);
-                this.handBatGroup.rotation.x = 0.35 - swing * 1.45;
-                this.handBatGroup.rotation.z = 0.25 + swing * 0.85;
-                this.handBatGroup.position.z = -0.58 - swing * 0.25;
+        this.camera.rotation.y = input.yaw;
+        this.camera.rotation.x = Math.max(-0.78, Math.min(0.78, input.pitch - pitchTilt));
+        this.camera.rotation.z = this.playerKnockback.roll;
             } else {
                 this.handBatGroup.rotation.x = 0.35 + Math.sin(this.player.bobPhase * 0.5) * 0.04;
                 this.handBatGroup.rotation.z = 0.25; this.handBatGroup.position.z = -0.58;
