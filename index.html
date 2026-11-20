@@ -193,6 +193,10 @@
                 <label class="block text-[11px] uppercase tracking-wider text-zinc-400 font-bold mb-1">WebSocket сервер (опционально):</label>
                 <input id="wsServerInput" type="url" placeholder="wss://your-casino-server.example"
                     class="w-full px-3.5 py-2 rounded-xl bg-zinc-950 border border-zinc-700 focus:border-emerald-400 focus:outline-none font-mono-num text-xs text-emerald-300" />
+                <div class="mt-1.5 flex items-center justify-between text-[11px] text-zinc-400">
+                    <span>Локальный режим (ПК + телефон в одной сети): <strong class="text-sky-300">АВТО</strong></span>
+                    <button type="button" onclick="window.mpSync && window.mpSync.reconnectLocal()" class="text-amber-300 hover:text-amber-200 font-bold underline">Переподключить сеть</button>
+                </div>
             </div>
             <button id="btnStartGame" onclick="game.startNewGame()"
                 class="btn-casino w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-zinc-950 font-black text-base sm:text-lg uppercase tracking-wider">
@@ -247,13 +251,39 @@ window.mpSync = {
     socketUrl: '',
     isHostAuthority: true,
     hostTickInterval: null,
+    peerRetryTimer: null,
+    seenPackets: new Map(),
     applyingRemoteAction: false,
     currentActionSeed: 0,
+
+    markAndCheckDuplicate(msg) {
+        if (!msg) return false;
+        const pktId = msg.eventId || msg.packetId || (msg.type === 'chat' ? `chat_${msg.uid}_${msg.sender}_${msg.text}` : null);
+        if (!pktId) return false;
+        const now = Date.now();
+        for (const [k, ts] of this.seenPackets.entries()) {
+            if (now - ts > 8000) this.seenPackets.delete(k);
+        }
+        if (this.seenPackets.has(pktId)) return true;
+        this.seenPackets.set(pktId, now);
+        return false;
+    },
+
+    reconnectLocal() {
+        const code = (document.getElementById('roomCodeInput')?.value || this.roomCode || 'CASINO777')
+            .toUpperCase().trim().replace(/[^A-Z0-9]/g, '').slice(0, 12) || 'CASINO777';
+        this.joinRoom(code);
+        if (window.game) window.game.showToast(`🔄 Поиск игроков в комнате ${code}...`, 'amber');
+    },
 
     joinRoom(roomCode) {
         this.roomCode = (roomCode || 'CASINO777').toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
         this.localPeers = {};
         this.isHostAuthority = true;
+        if (this.peerRetryTimer) {
+            clearInterval(this.peerRetryTimer);
+            this.peerRetryTimer = null;
+        }
 
         try {
             if (this.bc) this.bc.close();
@@ -292,6 +322,7 @@ window.mpSync = {
 
     handleIncomingNetworkMessage(msg) {
         if (!msg || !msg.type) return;
+        if (this.markAndCheckDuplicate(msg)) return;
         if (msg.type === 'state') {
             this.localPeers[msg.uid] = { ...msg.state, updatedAt: Date.now() };
             this.flushLocalPeers();
@@ -361,10 +392,11 @@ window.mpSync = {
 
     sendWorldPacket(packet) {
         const activeUid = window.myUid || myUid;
-        const msg = { ...packet, uid: activeUid, room: this.roomCode };
-        this.sendPacket(packet);
+        const packetId = packet.eventId || packet.packetId || `pkt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const msg = { ...packet, packetId, uid: activeUid, room: this.roomCode };
+        this.sendPacket(msg);
         if (this.bc) { try { this.bc.postMessage(msg); } catch (_) {} }
-        this.connections.forEach(c => { if (c.open) { try { c.send(msg); } catch (_) {} } });
+        this.connections.forEach(c => { if (c && c.open) { try { c.send(msg); } catch (_) {} } });
     },
 
     sendChatMessage(sender, text) {
@@ -402,31 +434,67 @@ window.mpSync = {
 
     initPeerJS() {
         if (typeof Peer === 'undefined') return;
-        try {
-            if (this.peer) { this.peer.destroy(); this.peer = null; }
-            this.connections = [];
-            const hostId = `casino3d-host-${this.roomCode}`;
-            const p = new Peer(hostId);
-            this.peer = p;
-
-            p.on('open', () => {});
-            p.on('connection', (conn) => { this.setupPeerConn(conn, true); });
-            p.on('error', (err) => {
-                if (err.type === 'unavailable-id') {
-                    const guestPeer = new Peer();
-                    this.peer = guestPeer;
-                    guestPeer.on('open', () => {
-                        const conn = guestPeer.connect(hostId, { reliable: false });
-                        this.setupPeerConn(conn, false);
-                    });
+        const startPeerSession = (asHost) => {
+            try {
+                if (this.peer) {
+                    try { this.peer.destroy(); } catch (_) {}
+                    this.peer = null;
                 }
-            });
-        } catch (_) {}
+                const hostId = `casino3d-lan-${this.roomCode}`;
+                const peerConfig = {
+                    debug: 0,
+                    config: {
+                        iceServers: [
+                            { urls: 'stun:stun.l.google.com:19302' },
+                            { urls: 'stun:stun1.l.google.com:19302' },
+                            { urls: 'stun:global.stun.twilio.com:3478' }
+                        ]
+                    }
+                };
+                const p = asHost ? new Peer(hostId, peerConfig) : new Peer(peerConfig);
+                this.peer = p;
+
+                p.on('open', () => {
+                    if (!asHost) {
+                        const conn = p.connect(hostId, { reliable: true, serialization: 'json' });
+                        this.setupPeerConn(conn, false);
+                    }
+                });
+
+                p.on('connection', (conn) => {
+                    this.setupPeerConn(conn, true);
+                });
+
+                p.on('error', (err) => {
+                    if (asHost && (err.type === 'unavailable-id' || err.type === 'id-taken')) {
+                        startPeerSession(false);
+                    }
+                });
+            } catch (_) {}
+        };
+
+        this.connections = [];
+        startPeerSession(true);
+
+        // Если гость или хост ещё не соединены, периодически пытаемся подключиться к комнате в локальной сети/интернете
+        this.peerRetryTimer = setInterval(() => {
+            if (!window.game || window.game.state !== 'PLAYING') return;
+            if (this.hasAuthoritativeServer()) return;
+            const openConns = this.connections.filter(c => c && c.open);
+            if (openConns.length > 0) return;
+            if (!this.peer || this.peer.disconnected || this.peer.destroyed) {
+                startPeerSession(true);
+            } else if (this.peer.id !== `casino3d-lan-${this.roomCode}` && this.peer.open) {
+                const conn = this.peer.connect(`casino3d-lan-${this.roomCode}`, { reliable: true, serialization: 'json' });
+                this.setupPeerConn(conn, false);
+            }
+        }, 3500);
     },
 
     setupPeerConn(conn, isHost) {
+        if (!conn) return;
         conn.on('open', () => {
-            this.connections.push(conn);
+            if (!this.connections.includes(conn)) this.connections.push(conn);
             if (!this.hasAuthoritativeServer()) {
                 this.isHostAuthority = true;
             }
@@ -434,15 +502,41 @@ window.mpSync = {
                 const modeLabel = this.hasAuthoritativeServer() ? 'WSS' : 'Локальный сервер устройства';
                 window.game.showToast(`🌐 Игрок подключился (${modeLabel})!`, 'green');
             }
+            if (window.game && window.game.state === 'PLAYING') {
+                const activeUid = window.myUid || myUid;
+                const statePkt = {
+                    type: 'state',
+                    uid: activeUid,
+                    room: this.roomCode,
+                    state: {
+                        name: window.game.playerName,
+                        x: Number(window.game.player.x.toFixed(2)),
+                        y: Number((window.game.player.jumpHeight || 0).toFixed(2)),
+                        z: Number(window.game.player.z.toFixed(2)),
+                        vy: Number((window.game.player.vy || 0).toFixed(2)),
+                        jumping: (window.game.player.jumpHeight || 0) > 0.05,
+                        yaw: Number((window.input?.yaw || 0).toFixed(2)),
+                        floor: window.game.currentFloor,
+                        hasBat: !!window.game.hasBat,
+                        ragdoll: window.game.remoteBatEvent || null,
+                        batEvent: window.game.remoteBatEvent || null,
+                        updatedAt: Date.now()
+                    }
+                };
+                try { conn.send(statePkt); } catch (_) {}
+            }
         });
         conn.on('data', (msg) => {
             const selfId = window.myUid || myUid;
             if (!msg || msg.uid === selfId) return;
-            if (isHost) this.connections.forEach(c => { if (c !== conn && c.open) c.send(msg); });
+            if (isHost) this.connections.forEach(c => { if (c !== conn && c && c.open) { try { c.send(msg); } catch (_) {} } });
             this.handleIncomingNetworkMessage(msg);
         });
         conn.on('close', () => {
-            this.connections = this.connections.filter(c => c !== conn);
+            this.connections = this.connections.filter(c => c !== conn && c && c.open);
+        });
+        conn.on('error', () => {
+            this.connections = this.connections.filter(c => c !== conn && c && c.open);
         });
     },
 
