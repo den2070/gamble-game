@@ -1678,7 +1678,8 @@ class Casino3DGame {
         if (this.playerKnockback) {
             Object.assign(this.playerKnockback, {
                 x: 0, z: 0, vy: 0, height: 0, roll: 0, rollVelocity: 0,
-                timer: 0, duration: 1.35, elapsed: 0, fromX: 0, fromZ: 0, goalX: null, goalZ: null
+                timer: 0, duration: 1.35, elapsed: 0, fromX: 0, fromZ: 0, goalX: null, goalZ: null,
+                lie: 0, getUp: 0, down: 0, lieDone: true, restRoll: 0
             });
         }
         input.yaw = 0;
@@ -1835,6 +1836,27 @@ class Casino3DGame {
         }
     }
 
+    ragdollLimbs(rig, t, flail, lie, seed) {
+        if (!rig) return;
+        const w = (f, ph) => Math.sin(t * f + seed + ph);
+        rig.armL.rotation.x = (-1.3 + w(13, 0)) * flail + 0.2 * lie;
+        rig.armL.rotation.z = 0.45 + flail * (0.5 + 0.5 * w(9, 1)) + lie * 0.6;
+        rig.armR.rotation.x = (-1.3 + w(12, 2)) * flail + 0.2 * lie;
+        rig.armR.rotation.z = -0.45 - flail * (0.5 + 0.5 * w(10, 3)) - lie * 0.6;
+        rig.legL.rotation.x = w(11, 4) * 0.9 * flail - 0.1 * lie;
+        rig.legL.rotation.z = flail * 0.25 * (0.5 + 0.5 * w(7, 5)) + lie * 0.22;
+        rig.legR.rotation.x = -w(11, 4) * 0.9 * flail - 0.1 * lie;
+        rig.legR.rotation.z = -flail * 0.25 * (0.5 + 0.5 * w(8, 6)) - lie * 0.22;
+        if (rig.headGroup) { rig.headGroup.rotation.x = w(8, 5) * 0.35 * flail + lie * 0.15; rig.headGroup.rotation.z = w(7, 6) * 0.3 * flail; }
+    }
+
+    resetRigPose(rig) {
+        if (!rig) return;
+        rig.armL.rotation.set(-0.35, 0, 0.45); rig.armR.rotation.set(-0.35, 0, -0.45);
+        rig.legL.rotation.set(0, 0, 0); rig.legR.rotation.set(0, 0, 0);
+        if (rig.headGroup) rig.headGroup.rotation.set(0, 0, 0);
+    }
+
     startRemoteAvatarRagdoll(uid, data) {
         const avatar = this.remoteAvatarMeshes[uid];
         if (!avatar || !data) return;
@@ -1861,6 +1883,9 @@ class Casino3DGame {
         avatar.userData.ragdollSpinX = (Math.random() * 6 + 6) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollSpinY = (Math.random() * 8 + 4) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollRollDir = Math.random() < 0.5 ? -1 : 1;
+        avatar.rotation.order = 'YXZ';
+        avatar.userData.ragSeed = Math.random() * 6.28; avatar.userData.ragT = 0;
+        avatar.userData.lieTimer = 0; avatar.userData.getUpTimer = 0; avatar.userData.lieAmt = 0.25; avatar.userData.flail = 1;
         avatar.userData.ragdollGoalX = goalX;
         avatar.userData.ragdollGoalZ = goalZ;
         avatar.userData.targetX = goalX;
@@ -1914,6 +1939,8 @@ class Casino3DGame {
             kb.height = Math.max(0.28, Number(packet.startY) || 0.28);
             kb.roll = 0;
             kb.rollVelocity = (Math.random() < 0.5 ? -1 : 1) * 9.5;
+            kb.rollSign = kb.rollVelocity >= 0 ? 1 : -1; kb.restRoll = kb.rollSign * 1.2;
+            kb.lieDone = false; kb.lie = 0; kb.getUp = 0; kb.down = 0;
             this.player.jumpHeight = kb.height;
             this.player.vy = kb.vy;
             sound.batHit();
@@ -1935,9 +1962,7 @@ class Casino3DGame {
             npc.y = Number(v.y) || 0; npc.vx = Number(v.vx) || 0;
             npc.vz = Number(v.vz) || 0; npc.vy = Number(v.vy) || 0;
             npc.ragdollTimer = Math.max(0, Number(v.ragdollTimer) || 0);
-            npc.rx = Number(v.rx) || 0; npc.rz = Number(v.rz) || 0;
-            npc.mesh.position.set(npc.x, npc.y, npc.z);
-            npc.mesh.rotation.x = npc.rx; npc.mesh.rotation.z = npc.rz;
+            if (npc.ragdollTimer <= 0 && !(npc.lieTimer > 0) && !(npc.getUpTimer > 0)) npc.mesh.position.set(npc.x, npc.y, npc.z);
         });
     }
 
@@ -3483,7 +3508,7 @@ class Casino3DGame {
                 this.remotePlayersGroup.add(avatar);
                 this.remoteAvatarMeshes[uid] = avatar;
             }
-            const isAvatarInRagdoll = (avatar.userData.ragdollTimer || 0) > 0;
+            const isAvatarInRagdoll = (avatar.userData.ragdollTimer || 0) > 0 || (avatar.userData.lieTimer || 0) > 0 || (avatar.userData.getUpTimer || 0) > 0;
             if (!isAvatarInRagdoll) {
                 avatar.userData.targetX = Number(p.x) || 0;
                 avatar.userData.targetZ = Number(p.z) || 0;
@@ -3632,8 +3657,20 @@ class Casino3DGame {
             this.player.jumpHeight = kb.height;
         }
 
+        if (!kb.lieDone && kb.timer <= 0 && kb.height <= 0.001) { kb.lieDone = true; kb.lie = 0.85; kb.getUp = 0; sound.penguinBounce(); }
+        if ((kb.lie || 0) > 0) {
+            kb.lie = Math.max(0, kb.lie - dt);
+            kb.down = (kb.down || 0) + (1 - (kb.down || 0)) * Math.min(1, dt * 10);
+            kb.roll = (kb.restRoll || 0) * kb.down;
+            if (kb.lie === 0) kb.getUp = 0.6;
+        } else if ((kb.getUp || 0) > 0) {
+            kb.getUp = Math.max(0, kb.getUp - dt);
+            const gk = kb.getUp / 0.6; kb.down = gk * gk; kb.roll = (kb.restRoll || 0) * kb.down;
+            if (kb.getUp === 0) { kb.down = 0; kb.roll = 0; kb.rollVelocity = 0; }
+        }
+
         this.playerMoveSpeed = 0;
-        const isKnockedDown = (this.playerKnockback.timer || 0) > 0 || (this.playerKnockback.height || 0) > 0.05;
+        const isKnockedDown = (this.playerKnockback.timer || 0) > 0 || (this.playerKnockback.height || 0) > 0.05 || (kb.lie || 0) > 0 || (kb.getUp || 0) > 0;
         if (!this.activeModal && !isKnockedDown) {
             const axis = input.getMoveAxis();
             if (axis.turn !== 0) input.yaw += axis.turn * 2.2 * dt;
@@ -3658,9 +3695,9 @@ class Casino3DGame {
         const headBob = totalAirHeight > 0.02 ? 0 : Math.sin(this.player.bobPhase) * 0.045;
         const fallDrop = this.playerKnockback.height > 0 ? Math.min(0.55, Math.abs(this.playerKnockback.roll) * 0.22) : 0;
         const pitchTilt = isKnockedDown ? Math.min(0.32, totalAirHeight * 0.14) : 0;
-        this.camera.position.set(this.player.x, Math.max(0.55, this.player.y + totalAirHeight + headBob - fallDrop), this.player.z);
+        this.camera.position.set(this.player.x, Math.max(0.42, this.player.y + totalAirHeight + headBob - fallDrop - 1.05 * (kb.down || 0)), this.player.z);
         this.camera.rotation.y = input.yaw;
-        this.camera.rotation.x = Math.max(-0.78, Math.min(0.78, input.pitch - pitchTilt));
+        this.camera.rotation.x = Math.max(-0.78, Math.min(0.78, input.pitch - pitchTilt - 0.3 * (kb.down || 0)));
         this.camera.rotation.z = this.playerKnockback.roll;
 
         for (const avatar of Object.values(this.remoteAvatarMeshes)) {
@@ -3668,39 +3705,60 @@ class Casino3DGame {
             const ud = avatar.userData;
             const rig = ud.rig;
             const oldX = avatar.position.x, oldZ = avatar.position.z;
-            if ((ud.ragdollTimer || 0) > 0) {
-                ud.ragdollTimer = Math.max(0, ud.ragdollTimer - dt);
-                ud.ragdollElapsed = (ud.ragdollElapsed || 0) + dt;
-                const ratio = Math.min(1, ud.ragdollElapsed / Math.max(0.35, (ud.ragdollDuration || 1.35) * 0.85));
-                let rnx = avatar.position.x + (ud.ragdollVx || 0) * dt;
-                let rnz = avatar.position.z + (ud.ragdollVz || 0) * dt;
-                if (ud.ragdollTimer <= 0.25 && Number.isFinite(ud.ragdollGoalX) && Number.isFinite(ud.ragdollGoalZ)) {
-                    rnx = rnx * 0.72 + ud.ragdollGoalX * 0.28;
-                    rnz = rnz * 0.72 + ud.ragdollGoalZ * 0.28;
+            const inRag = (ud.ragdollTimer || 0) > 0 || (ud.lieTimer || 0) > 0 || (ud.getUpTimer || 0) > 0;
+            if (inRag) {
+                ud.ragT = (ud.ragT || 0) + dt;
+                const sign = ud.ragdollRollDir || 1;
+                if ((ud.ragdollTimer || 0) > 0) {
+                    ud.ragdollTimer = Math.max(0, ud.ragdollTimer - dt);
+                    ud.ragdollElapsed = (ud.ragdollElapsed || 0) + dt;
+                    const ratio = Math.min(1, ud.ragdollElapsed / Math.max(0.35, (ud.ragdollDuration || 1.35) * 0.85));
+                    let rnx = avatar.position.x + (ud.ragdollVx || 0) * dt;
+                    let rnz = avatar.position.z + (ud.ragdollVz || 0) * dt;
+                    if (ud.ragdollTimer <= 0.25 && Number.isFinite(ud.ragdollGoalX) && Number.isFinite(ud.ragdollGoalZ)) {
+                        rnx = rnx * 0.72 + ud.ragdollGoalX * 0.28;
+                        rnz = rnz * 0.72 + ud.ragdollGoalZ * 0.28;
+                    }
+                    rnx = Math.max(-10.2, Math.min(10.2, rnx));
+                    rnz = Math.max(-8.2, Math.min(8.2, rnz));
+                    if (!this.checkCollision3D(rnx, avatar.position.z)) avatar.position.x = rnx;
+                    if (!this.checkCollision3D(avatar.position.x, rnz)) avatar.position.z = rnz;
+                    ud.lieAmt = 0.25 + 0.75 * ratio * ratio;
+                    ud.flail = 1 - 0.35 * ratio;
+                    avatar.rotation.y += (ud.ragdollSpinY || 5) * (1 - 0.8 * ratio) * dt;
+                    if (ud.ragdollTimer === 0) {
+                        if (Number.isFinite(ud.ragdollGoalX) && !this.checkCollision3D(ud.ragdollGoalX, avatar.position.z)) avatar.position.x = ud.ragdollGoalX;
+                        if (Number.isFinite(ud.ragdollGoalZ) && !this.checkCollision3D(avatar.position.x, ud.ragdollGoalZ)) avatar.position.z = ud.ragdollGoalZ;
+                        ud.lieTimer = 0.95;
+                    }
+                } else if ((ud.lieTimer || 0) > 0) {
+                    ud.lieTimer = Math.max(0, ud.lieTimer - dt);
+                    ud.lieAmt += (1 - ud.lieAmt) * Math.min(1, dt * 12);
+                    ud.flail = Math.max(0, (ud.flail || 0) - dt * 4);
+                    if (ud.lieTimer === 0) ud.getUpTimer = 0.55;
+                } else {
+                    ud.getUpTimer = Math.max(0, ud.getUpTimer - dt);
+                    const g = ud.getUpTimer / 0.55;
+                    ud.lieAmt = g * g; ud.flail = 0;
                 }
-                rnx = Math.max(-10.2, Math.min(10.2, rnx));
-                rnz = Math.max(-8.2, Math.min(8.2, rnz));
-                if (!this.checkCollision3D(rnx, avatar.position.z)) avatar.position.x = rnx;
-                if (!this.checkCollision3D(avatar.position.x, rnz)) avatar.position.z = rnz;
-
-                ud.ragdollVy = (ud.ragdollVy || 0) - 14.5 * dt;
-                ud.jumpHeight = (ud.jumpHeight || 0) + ud.ragdollVy * dt;
-                if (ud.jumpHeight <= 0) {
-                    ud.jumpHeight = 0;
-                    ud.ragdollVy = ud.ragdollVy < -2.6 ? -ud.ragdollVy * 0.42 : 0;
+                if ((ud.jumpHeight || 0) > 0 || (ud.ragdollVy || 0) !== 0) {
+                    ud.ragdollVy = (ud.ragdollVy || 0) - 14.5 * dt;
+                    ud.jumpHeight = (ud.jumpHeight || 0) + ud.ragdollVy * dt;
+                    if (ud.jumpHeight <= 0) {
+                        ud.jumpHeight = 0;
+                        if (ud.ragdollVy < -2.6) { ud.ragdollVy = -ud.ragdollVy * 0.42; sound.penguinBounce(); } else ud.ragdollVy = 0;
+                    }
                 }
-                const swing = Math.sin(ratio * Math.PI);
-                avatar.rotation.x = swing * 0.65 * (ud.ragdollRollDir || 1);
-                avatar.rotation.z = swing * 0.78 * (ud.ragdollRollDir || 1);
-                avatar.rotation.y += (ud.ragdollSpinY || 5) * dt;
-                avatar.position.y = ud.jumpHeight;
-
-                if (ud.ragdollTimer === 0 && ud.jumpHeight === 0) {
-                    if (Number.isFinite(ud.ragdollGoalX) && !this.checkCollision3D(ud.ragdollGoalX, avatar.position.z)) avatar.position.x = ud.ragdollGoalX;
-                    if (Number.isFinite(ud.ragdollGoalZ) && !this.checkCollision3D(avatar.position.x, ud.ragdollGoalZ)) avatar.position.z = ud.ragdollGoalZ;
-                    avatar.rotation.x = 0;
-                    avatar.rotation.z = 0;
-                    avatar.position.y = 0;
+                const lie = ud.lieAmt || 0, fl = ud.flail || 0;
+                avatar.rotation.order = 'YXZ';
+                avatar.rotation.x = sign * lie * (Math.PI / 2);
+                avatar.rotation.z = Math.sin(ud.ragT * 9 + (ud.ragSeed || 0)) * 0.22 * fl;
+                avatar.position.y = (ud.jumpHeight || 0) + 0.3 * lie;
+                this.ragdollLimbs(rig, ud.ragT, fl, lie * (1 - fl), ud.ragSeed || 0);
+                if (!((ud.ragdollTimer || 0) > 0 || (ud.lieTimer || 0) > 0 || (ud.getUpTimer || 0) > 0)) {
+                    avatar.rotation.x = 0; avatar.rotation.z = 0; avatar.position.y = 0;
+                    ud.lieAmt = 0; ud.jumpHeight = 0; ud.ragdollVy = 0; ud.jumpVy = 0;
+                    this.resetRigPose(rig);
                 }
             } else {
                 const blend = 1 - Math.exp(-12 * dt);
@@ -3730,29 +3788,53 @@ class Casino3DGame {
 
         for (const npc of this.npcs) {
             if (!npc || !npc.mesh) continue;
+            if ((npc.ragdollTimer || 0) > 0 && !npc.wasRag) {
+                npc.wasRag = true; npc.ragT = 0; npc.rgSign = Math.random() < 0.5 ? -1 : 1; npc.seed = Math.random() * 6.28;
+                npc.lieAmt = 0.25; npc.lieTimer = 0; npc.getUpTimer = 0; npc.mesh.rotation.order = 'YXZ';
+            } else if ((npc.ragdollTimer || 0) <= 0 && npc.wasRag) {
+                npc.wasRag = false; npc.lieTimer = 1.0; npc.getUpTimer = 0; npc.vx = 0; npc.vz = 0;
+            }
+            const npcPose = (flail, lie) => {
+                npc.mesh.rotation.order = 'YXZ';
+                npc.mesh.rotation.x = npc.rgSign * npc.lieAmt * (Math.PI / 2);
+                npc.mesh.rotation.z = Math.sin(npc.ragT * 9 + npc.seed) * 0.22 * flail;
+                npc.mesh.position.set(npc.x, (npc.y || 0) + 0.3 * npc.lieAmt, npc.z);
+                this.ragdollLimbs(npc.rig, npc.ragT, flail, lie, npc.seed);
+            };
             if ((npc.ragdollTimer || 0) > 0) {
                 npc.ragdollTimer = Math.max(0, npc.ragdollTimer - dt);
+                npc.ragT += dt;
                 npc.vy = (npc.vy || 0) - 16.5 * dt;
                 npc.x = Math.max(-10.4, Math.min(10.4, npc.x + (npc.vx || 0) * dt));
                 npc.z = Math.max(-8.4, Math.min(8.4, npc.z + (npc.vz || 0) * dt));
                 npc.y = (npc.y || 0) + npc.vy * dt;
                 if (npc.y <= 0) {
                     npc.y = 0;
-                    if (npc.vy < -2.4) npc.vy = -npc.vy * 0.42;
-                    else npc.vy = 0;
-                    npc.vx *= 0.72;
-                    npc.vz *= 0.72;
+                    if (npc.vy < -2.4) { npc.vy = -npc.vy * 0.42; sound.penguinBounce(); } else npc.vy = 0;
+                    npc.vx *= 0.72; npc.vz *= 0.72;
                 }
-                npc.rx = (npc.rx || 0) + (npc.vrx || 0) * dt;
-                npc.rz = (npc.rz || 0) + (npc.vrz || 0) * dt;
-                npc.mesh.position.set(npc.x, npc.y, npc.z);
-                npc.mesh.rotation.x = npc.rx;
-                npc.mesh.rotation.z = npc.rz;
-                npc.mesh.rotation.y += (npc.vry || 0) * dt;
-                if (npc.ragdollTimer === 0 && npc.y === 0) {
-                    npc.rx = 0; npc.rz = 0; npc.vx = 0; npc.vz = 0; npc.vy = 0;
-                    npc.mesh.rotation.x = 0; npc.mesh.rotation.z = 0;
-                    npc.mesh.position.set(npc.x, 0, npc.z);
+                const ratio = Math.min(1, npc.ragT / 1.7);
+                npc.lieAmt = 0.25 + 0.75 * ratio * ratio;
+                const fl = 1 - 0.4 * ratio;
+                npc.mesh.rotation.y += (npc.vry || 0) * (1 - 0.8 * ratio) * dt;
+                npcPose(fl, 0);
+            } else if ((npc.lieTimer || 0) > 0 || (npc.getUpTimer || 0) > 0) {
+                npc.vx = 0; npc.vz = 0; npc.ragT += dt;
+                if ((npc.y || 0) > 0) { npc.vy = (npc.vy || 0) - 16.5 * dt; npc.y = Math.max(0, npc.y + npc.vy * dt); if (npc.y === 0) npc.vy = 0; }
+                if (npc.lieTimer > 0) {
+                    npc.lieTimer = Math.max(0, npc.lieTimer - dt);
+                    npc.lieAmt += (1 - npc.lieAmt) * Math.min(1, dt * 12);
+                    if (npc.lieTimer === 0) npc.getUpTimer = 0.55;
+                } else {
+                    npc.getUpTimer = Math.max(0, npc.getUpTimer - dt);
+                    const g = npc.getUpTimer / 0.55; npc.lieAmt = g * g;
+                }
+                npcPose(0, npc.lieAmt);
+                if (!(npc.lieTimer > 0) && !(npc.getUpTimer > 0)) {
+                    npc.lieAmt = 0; npc.rx = 0; npc.rz = 0;
+                    npc.mesh.rotation.x = 0; npc.mesh.rotation.z = 0; npc.mesh.position.set(npc.x, 0, npc.z);
+                    this.resetRigPose(npc.rig);
+                    npc.vx = (Math.random() - 0.5) * 2.2; npc.vz = (Math.random() - 0.5) * 2.2;
                 }
             } else {
                 const nx = Math.max(-10.2, Math.min(10.2, npc.x + (npc.vx || 0) * dt));
