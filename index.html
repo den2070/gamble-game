@@ -63,7 +63,7 @@
                 <div class="hidden lg:block h-6 w-px bg-zinc-700"></div>
                 <div class="hidden lg:block">
                     <div class="text-[10px] uppercase tracking-wider text-zinc-400 font-bold">Версия</div>
-                    <div class="font-mono-num text-xs font-extrabold text-emerald-400">v2.0 RELEASE</div>
+                    <div class="font-mono-num text-xs font-extrabold text-emerald-400">v2.4 RELEASE</div>
                 </div>
             </div>
 
@@ -189,7 +189,7 @@
                         3D КООПЕРАТИВ
                     </div>
                     <div class="px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 font-mono-num text-[11px] font-extrabold uppercase tracking-wider">
-                        1.0 RELEASE
+                        2.4 RELEASE
                     </div>
                 </div>
                 <select id="langSelect" onchange="game.changeLanguage(this.value)" class="bg-zinc-950 border border-zinc-700 rounded-xl px-2.5 py-1 text-xs font-bold text-amber-300 focus:outline-none">
@@ -691,6 +691,7 @@ window.mpSync = {
             hasBat: !!state.hasBat,
             ragdoll: state.ragdoll || null,
             batEvent: state.batEvent || null,
+            look: window.myLook || null,
             updatedAt: now
         };
         const selfId = window.myUid || myUid;
@@ -1359,7 +1360,7 @@ class Casino3DGame {
             const blink = r.blinkLeft > 0; if (blink) r.blinkLeft -= dt;
             r.eyeL.scale.y = r.eyeR.scale.y = blink ? 0.12 : 1.15;
             r.pupL.position.x = 0.01 + Math.sin(t * 0.9 + r.seed) * 0.02; r.pupR.position.x = -0.01 + Math.sin(t * 0.9 + r.seed) * 0.02;
-            r.headGroup.rotation.y = Math.sin(t * 0.7 + r.seed) * 0.18;
+            if (!r.ragdolling) r.headGroup.rotation.y = Math.sin(t * 0.7 + r.seed) * 0.18;
         }
     }
 
@@ -1446,6 +1447,7 @@ class Casino3DGame {
     }
 
     winFx(amount) {
+        if (window.friendBigWin) window.friendBigWin(amount);
         const pop = document.createElement('div');
         pop.textContent = `+$${amount.toLocaleString()}`;
         pop.style.cssText = 'position:fixed;left:50%;top:38%;transform:translate(-50%,0);font:900 54px/1 Inter,sans-serif;color:#fde047;text-shadow:0 0 24px #f59e0b,0 4px 0 #92400e;pointer-events:none;z-index:60;transition:transform 1.8s ease-out,opacity 1.8s ease-in;opacity:1';
@@ -1531,7 +1533,7 @@ class Casino3DGame {
         return new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
     }
 
-    createGoofyCharacterMesh(shirtHex = 0x334155, skinHex = 0xa3b18a, hatHex = 0xf97316) {
+    createGoofyCharacterMesh(shirtHex = 0x334155, skinHex = 0xa3b18a, hatHex = 0xf97316, accessory = null) {
         const root = new THREE.Group();
         const skinMat = new THREE.MeshStandardMaterial({ color: skinHex, roughness: 0.5 });
         const shirtMat = new THREE.MeshStandardMaterial({ color: shirtHex, roughness: 0.45 });
@@ -1617,7 +1619,7 @@ class Casino3DGame {
         const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.07, 0.03), trimMat); buckle.position.set(0, 0.55, 0.33);
         root.add(belt, buckle);
         [0.72, 0.92, 1.12].forEach((y) => { const b = new THREE.Mesh(new THREE.SphereGeometry(0.022, 6, 6), trimMat); b.position.set(0, y, 0.31 - (y - 0.85) * 0.07 + 0.012); root.add(b); });
-        const variant = (shirtHex >> 3) & 3, dark = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.6 });
+        const variant = (accessory === null || accessory === undefined) ? ((shirtHex >> 3) & 3) : accessory, dark = new THREE.MeshStandardMaterial({ color: 0x18181b, roughness: 0.6 });
         if (variant === 1) {
             const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.2, 0.3, 16), dark); crown.position.y = 0.39;
             const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.035, 18), dark); brim.position.y = 0.245;
@@ -2224,6 +2226,8 @@ class Casino3DGame {
         avatar.userData.ragdollSpinX = (Math.random() * 6 + 6) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollSpinY = (Math.random() * 8 + 4) * (Math.random() < 0.5 ? -1 : 1);
         avatar.userData.ragdollRollDir = Math.random() < 0.5 ? -1 : 1;
+        if (avatar.userData.sim) { avatar.userData.sim.finish(); avatar.userData.sim = null; }
+        avatar.userData.carry = false; avatar.userData.carryPins = null;
         avatar.rotation.order = 'YXZ';
         avatar.userData.ragSeed = Math.random() * 6.28; avatar.userData.ragT = 0;
         avatar.userData.lieTimer = 0; avatar.userData.getUpTimer = 0; avatar.userData.lieAmt = 0.25; avatar.userData.flail = 1;
@@ -2303,7 +2307,7 @@ class Casino3DGame {
             npc.y = Number(v.y) || 0; npc.vx = Number(v.vx) || 0;
             npc.vz = Number(v.vz) || 0; npc.vy = Number(v.vy) || 0;
             npc.ragdollTimer = Math.max(0, Number(v.ragdollTimer) || 0);
-            if (npc.ragdollTimer <= 0 && !(npc.lieTimer > 0) && !(npc.getUpTimer > 0)) npc.mesh.position.set(npc.x, npc.y, npc.z);
+            if (!npc.sim) npc.mesh.position.set(npc.x, npc.y, npc.z);
         });
     }
 
@@ -2800,12 +2804,14 @@ class Casino3DGame {
             scr.tex.needsUpdate = true;
         };
 
+        const mBal = (d) => { this.changeBalance(d); if (window.friendRound) window.friendRound(def.id, d, false); };
+        const mLoss = (stk) => { const r = this.notifyRoundLoss(stk); if (window.friendRound) window.friendRound(def.id, 0, true); return r; };
         const canStake = () => {
             if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return false; }
             if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return false; }
             return true;
         };
-        const finishLoss = (stk, text) => { sound.lose(); const saved = this.notifyRoundLoss(stk); mState.status = saved ? 'Жетон спас ставку!' : text; };
+        const finishLoss = (stk, text) => { sound.lose(); const saved = mLoss(stk); mState.status = saved ? 'Жетон спас ставку!' : text; };
 
         if (def.type === 'slots') {
             const symbols = ['🍒', '🍋', '🔔', '💎', '7️⃣'];
@@ -2837,7 +2843,7 @@ class Casino3DGame {
                 if (mState.busy) return;
                 if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
-                mState.busy = true; const stake = mState.bet; this.changeBalance(-stake);
+                mState.busy = true; const stake = mState.bet; mBal(-stake);
                 mState.status = 'Барабаны крутятся...'; mState.updateScreen();
                 syncMachineSnapshot(true);
 
@@ -2854,13 +2860,13 @@ class Casino3DGame {
                     if (ticks >= 20) {
                         clearInterval(iv); mState.busy = false;
                         if (res[0] === res[1] && res[1] === res[2]) {
-                            const win = stake * payouts[res[0]]; sound.bigWin(); this.changeBalance(win);
+                            const win = stake * payouts[res[0]]; sound.bigWin(); mBal(win);
                             mState.status = `ДЖЕКПОТ ${res[0]}${res[0]}${res[0]}! +$${win.toLocaleString()}!`;
                         } else if (res[0] === res[1] || res[1] === res[2] || res[0] === res[2]) {
-                            const win = Math.round(stake * 1.5); sound.win(); this.changeBalance(win);
+                            const win = Math.round(stake * 1.5); sound.win(); mBal(win);
                             mState.status = `ПАРА! +$${win.toLocaleString()}!`;
                         } else {
-                            sound.lose(); const saved = this.notifyRoundLoss(stake);
+                            sound.lose(); const saved = mLoss(stake);
                             mState.status = saved ? 'Жетон спас ставку!' : 'Мимо! Ещё раз.';
                         }
                         mState.updateScreen();
@@ -2964,8 +2970,8 @@ class Casino3DGame {
                         const mult = multTables[pg.risk || risk][idx];
                         if (!pg.remote) {
                             const win = Math.round(pg.stake * mult);
-                            if (win > 0) { this.changeBalance(win); if (mult >= 2) sound.win(); }
-                            if (win < pg.stake) this.notifyRoundLoss(pg.stake - win);
+                            if (win > 0) { mBal(win); if (mult >= 2) sound.win(); }
+                            if (win < pg.stake) mLoss(pg.stake - win);
                             mState.status = `Лунка ${mult}x → +$${win.toLocaleString()}!`;
                         }
                         penguins.splice(i, 1);
@@ -2983,7 +2989,7 @@ class Casino3DGame {
             addBtn('ПУСК 🐧', '#38bdf8', '#09090b', 0.38, 0.38, 0.68, 0.18, () => {
                 if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
-                this.changeBalance(-mState.bet); sound.click();
+                mBal(-mState.bet); sound.click();
                 mState.status = `Пингвин полетел (${risk.toUpperCase()})!`;
                 penguins.push({ x: 256 + (Math.random() - 0.5) * 16, y: 62, vx: (Math.random() - 0.5) * 35, vy: 30, stake: mState.bet, risk, remote: false });
                 mState.updateScreen();
@@ -3011,7 +3017,7 @@ class Casino3DGame {
             const roll = (choice) => {
                 if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
-                const stake = mState.bet; this.changeBalance(-stake); sound.spinTick();
+                const stake = mState.bet; mBal(-stake); sound.spinTick();
                 let a = Math.floor(Math.random() * 6) + 1, b = Math.floor(Math.random() * 6) + 1, sum = a + b;
                 dVals = [a, b];
                 let win = 0;
@@ -3019,8 +3025,8 @@ class Casino3DGame {
                 else if (choice === 'over' && sum > 7) win = Math.round(stake * 2.2);
                 else if (choice === 'seven' && sum === 7) win = stake * 5;
 
-                if (win > 0) { sound.win(); this.changeBalance(win); mState.status = `Выпало ${sum}! +$${win.toLocaleString()}!`; }
-                else { sound.lose(); const saved = this.notifyRoundLoss(stake); mState.status = saved ? `Выпало ${sum}. Жетон спас!` : `Выпало ${sum}. Проигрыш.`; }
+                if (win > 0) { sound.win(); mBal(win); mState.status = `Выпало ${sum}! +$${win.toLocaleString()}!`; }
+                else { sound.lose(); const saved = mLoss(stake); mState.status = saved ? `Выпало ${sum}. Жетон спас!` : `Выпало ${sum}. Проигрыш.`; }
                 mState.updateScreen();
                 syncMachineSnapshot(true);
             };
@@ -3071,9 +3077,9 @@ class Casino3DGame {
                 while(calc(dHand)<17) dHand.push(drawC());
                 reveal = true; inRound = false;
                 const ps = calc(pHand), ds = calc(dHand);
-                if (ds > 21 || ps > ds) { const win = stake * 2; sound.win(); this.changeBalance(win); mState.status = `ПОБЕДА! +$${win.toLocaleString()}!`; }
-                else if (ps === ds) { sound.coin(); this.changeBalance(stake); mState.status = 'Ничья.'; }
-                else { sound.lose(); const saved = this.notifyRoundLoss(stake); mState.status = saved ? 'Жетон спас!' : 'Дилер победил.'; }
+                if (ds > 21 || ps > ds) { const win = stake * 2; sound.win(); mBal(win); mState.status = `ПОБЕДА! +$${win.toLocaleString()}!`; }
+                else if (ps === ds) { sound.coin(); mBal(stake); mState.status = 'Ничья.'; }
+                else { sound.lose(); const saved = mLoss(stake); mState.status = saved ? 'Жетон спас!' : 'Дилер победил.'; }
                 mState.updateScreen();
                 syncMachineSnapshot(true);
             };
@@ -3082,24 +3088,24 @@ class Casino3DGame {
                 if (inRound) return;
                 if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
-                sound.click(); stake = mState.bet; this.changeBalance(-stake); inRound = true; reveal = false;
+                sound.click(); stake = mState.bet; mBal(-stake); inRound = true; reveal = false;
                 pHand = [drawC(), drawC()]; dHand = [drawC(), drawC()];
                 mState.status = 'Ваш ход!'; mState.updateScreen();
                 syncMachineSnapshot(true);
             }, deck);
             addBtn('ЕЩЁ', '#f59e0b', '#09090b', -0.18, 0.38, 0.32, 0.18, () => {
                 if (!inRound) return; sound.click(); pHand.push(drawC());
-                if (calc(pHand) > 21) { reveal = true; inRound = false; sound.lose(); this.notifyRoundLoss(stake); mState.status = 'Перебор!'; }
+                if (calc(pHand) > 21) { reveal = true; inRound = false; sound.lose(); mLoss(stake); mState.status = 'Перебор!'; }
                 mState.updateScreen();
                 syncMachineSnapshot(true);
             }, deck);
             addBtn('ХВАТИТ', '#52525b', '#ffffff', 0.18, 0.38, 0.32, 0.18, () => { if (inRound) finishD(); }, deck);
             addBtn('x2', '#9333ea', '#ffffff', 0.56, 0.38, 0.32, 0.18, () => {
                 if (!inRound || pHand.length !== 2 || this.balance < stake) return;
-                sound.coin(); this.changeBalance(-stake); stake *= 2; pHand.push(drawC());
+                sound.coin(); mBal(-stake); stake *= 2; pHand.push(drawC());
                 if (calc(pHand) > 21) {
                     reveal = true; inRound = false; sound.lose();
-                    const saved = this.notifyRoundLoss(stake);
+                    const saved = mLoss(stake);
                     mState.status = saved ? 'Перебор! Жетон спас ставку.' : 'Перебор!';
                     mState.updateScreen();
                     syncMachineSnapshot(true);
@@ -3150,7 +3156,7 @@ class Casino3DGame {
                 if (racing) return;
                 if (mState.bet < cfg.minBet) { this.showToast(`Минимальная ставка: $${cfg.minBet}`, 'red'); return; }
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
-                const stake = mState.bet; this.changeBalance(-stake);
+                const stake = mState.bet; mBal(-stake);
                 racing = true; duckProgress = [0.05, 0.05, 0.05, 0.05];
                 sound.duckQuack(); mState.status = `Гонка уток! Ставка на #${selectedDuck}`; mState.updateScreen();
                 syncMachineSnapshot(true);
@@ -3167,10 +3173,10 @@ class Casino3DGame {
                     if (winner !== -1) {
                         racing = false; mState.tickAnim = null;
                         if (winner === selectedDuck) {
-                            const win = stake * 3; sound.bigWin(); this.changeBalance(win);
+                            const win = stake * 3; sound.bigWin(); mBal(win);
                             mState.status = `Утка #${winner} первая! +$${win.toLocaleString()}!`;
                         } else {
-                            sound.lose(); const saved = this.notifyRoundLoss(stake);
+                            sound.lose(); const saved = mLoss(stake);
                             mState.status = saved ? `Победила #${winner}. Жетон спас!` : `Победила #${winner}. Проигрыш.`;
                         }
                         mState.updateScreen();
@@ -3272,7 +3278,7 @@ class Casino3DGame {
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
 
                 const stake = mState.bet;
-                this.changeBalance(-stake);
+                mBal(-stake);
                 isSpinningR = true;
                 mState.status = 'Рулетка крутится...';
                 mState.updateScreen();
@@ -3319,11 +3325,11 @@ class Casino3DGame {
 
                         if (win > 0) {
                             sound.bigWin();
-                            this.changeBalance(win);
+                            mBal(win);
                             mState.status = `Выпало ${finalNum} (${actualColor.toUpperCase()})! +$${win.toLocaleString()}!`;
                         } else {
                             sound.lose();
-                            const saved = this.notifyRoundLoss(stake);
+                            const saved = mLoss(stake);
                             mState.status = saved
                                 ? `Выпало ${finalNum}. Жетон спас ставку!`
                                 : `Выпало ${finalNum} (${actualColor.toUpperCase()}). Проигрыш.`;
@@ -3350,7 +3356,6 @@ class Casino3DGame {
             rFlame.position.y = 1.38; rFlame.rotation.x = Math.PI;
             rocketModel.add(rBody, rFlame);
             group.add(rocketModel);
-            mState.rocketModel = rocketModel;
 
             mState.exportState = () => ({
                 bet: mState.bet, betStr: mState.betStr, busy: rocketState === 'flying',
@@ -3412,7 +3417,7 @@ class Casino3DGame {
                 if (mState.bet < cfg.minBet || this.balance < mState.bet) {
                     this.showToast('Недостаточно средств или мала ставка!', 'red'); return;
                 }
-                stake = mState.bet; this.changeBalance(-stake);
+                stake = mState.bet; mBal(-stake);
                 if (fly) { this.floorGroup.remove(fly); fly = null; }
                 rocketState = 'flying'; mult = 1.0; crashAt = (() => {
                     // Шанс выжить на проверке: 75% на старте, -0.1% за каждые 0.01x (минимум 3%).
@@ -3449,7 +3454,7 @@ class Casino3DGame {
                     }
                     if (mult >= crashAt) {
                         rocketState = 'crashed'; rFlame.visible = false; sound.lose();
-                        this.notifyRoundLoss(stake);
+                        mLoss(stake);
                         mState.status = `Ракета взорвалась на ${crashAt}x!`;
                         mState.updateScreen();
                         syncMachineSnapshot(true);
@@ -3464,7 +3469,7 @@ class Casino3DGame {
                 if (rocketState !== 'flying') return;
                 rocketState = 'cashed'; rFlame.visible = false;
                 const win = Math.round(stake * mult);
-                sound.bigWin(); this.changeBalance(win);
+                sound.bigWin(); mBal(win);
                 mState.status = `Забрано на ${mult.toFixed(2)}x! +$${win}!`;
                 mState.updateScreen();
                 syncMachineSnapshot(true);
@@ -3557,7 +3562,7 @@ class Casino3DGame {
                 if (this.balance < mState.bet) { this.showToast('Недостаточно денег!', 'red'); return; }
 
                 const stake = mState.bet;
-                this.changeBalance(-stake);
+                mBal(-stake);
                 isSpinning = true;
                 mState.status = 'Колесо вращается...';
                 mState.updateScreen();
@@ -3601,7 +3606,7 @@ class Casino3DGame {
                         const sec = sectors[targetSecIndex];
                         const win = Math.round(stake * sec.mult);
 
-                        if (win > 0) this.changeBalance(win);
+                        if (win > 0) mBal(win);
 
                         if (win > stake) {
                             sound.bigWin();
@@ -3611,7 +3616,7 @@ class Casino3DGame {
                             mState.status = `Сектор ${sec.label}. Ставка возвращена.`;
                         } else {
                             sound.lose();
-                            const saved = this.notifyRoundLoss(stake - win);
+                            const saved = mLoss(stake - win);
                             mState.status = saved
                                 ? `Сектор ${sec.label}. Жетон спас остаток!`
                                 : `Сектор ${sec.label}. Проигрыш.`;
@@ -3645,7 +3650,7 @@ class Casino3DGame {
                 }
                 scr.tex.needsUpdate = true;
             };
-            const cashM = () => { if (st !== 'play' || opened.length === 0) return; const win = Math.round(stake * mult); st = 'won'; this.changeBalance(win); sound.bigWin(); mState.status = `Забрал ${mult.toFixed(2)}x! +$${win.toLocaleString()}`; };
+            const cashM = () => { if (st !== 'play' || opened.length === 0) return; const win = Math.round(stake * mult); st = 'won'; mBal(win); sound.bigWin(); mState.status = `Забрал ${mult.toFixed(2)}x! +$${win.toLocaleString()}`; };
             const redraw = () => { mState.updateScreen(); syncMachineSnapshot(true); };
             addBtn('➜', '#3f3f46', '#fef08a', -0.56, 0.38, 0.32, 0.18, () => { sound.click(); cur = Math.floor(cur / N) * N + ((cur % N) + 1) % N; redraw(); }, deck);
             addBtn('⬇', '#3f3f46', '#fef08a', -0.18, 0.38, 0.32, 0.18, () => { sound.click(); cur = ((Math.floor(cur / N) + 1) % N) * N + (cur % N); redraw(); }, deck);
@@ -3653,7 +3658,7 @@ class Casino3DGame {
                 if (st === 'play' && opened.includes(cur)) return;
                 if (st !== 'play') {
                     if (!canStake()) return;
-                    stake = mState.bet; this.changeBalance(-stake); st = 'play'; opened = []; mult = 1; grid = Array(N * N).fill(false);
+                    stake = mState.bet; mBal(-stake); st = 'play'; opened = []; mult = 1; grid = Array(N * N).fill(false);
                     for (let placed = 0; placed < MINES;) { const k = Math.floor(Math.random() * N * N); if (!grid[k]) { grid[k] = true; placed++; } }
                 }
                 if (grid[cur]) { st = 'lost'; finishLoss(stake, `БУМ! 💥 Мина. -$${stake.toLocaleString()}`); }
@@ -3684,14 +3689,14 @@ class Casino3DGame {
                 }
                 scr.tex.needsUpdate = true;
             };
-            const cashD = () => { if (st !== 'play' || lvl === 0) return; const win = Math.round(stake * multAt(lvl)); st = 'won'; this.changeBalance(win); sound.bigWin(); mState.status = `Забрал ${multAt(lvl).toFixed(2)}x! +$${win.toLocaleString()}`; };
+            const cashD = () => { if (st !== 'play' || lvl === 0) return; const win = Math.round(stake * multAt(lvl)); st = 'won'; mBal(win); sound.bigWin(); mState.status = `Забрал ${multAt(lvl).toFixed(2)}x! +$${win.toLocaleString()}`; };
             const redraw = () => { mState.updateScreen(); syncMachineSnapshot(true); };
             addBtn('◀', '#3f3f46', '#fef08a', -0.56, 0.38, 0.32, 0.18, () => { sound.click(); col = (col + COLS - 1) % COLS; redraw(); }, deck);
             addBtn('▶', '#3f3f46', '#fef08a', -0.18, 0.38, 0.32, 0.18, () => { sound.click(); col = (col + 1) % COLS; redraw(); }, deck);
             addBtn('ВЫБРАТЬ', '#a855f7', '#ffffff', 0.18, 0.38, 0.32, 0.18, () => {
                 if (st !== 'play') {
                     if (!canStake()) return;
-                    stake = mState.bet; this.changeBalance(-stake); st = 'play'; lvl = 0; picks = []; dragons = [];
+                    stake = mState.bet; mBal(-stake); st = 'play'; lvl = 0; picks = []; dragons = [];
                     for (let i = 0; i < ROWS; i++) dragons.push(Math.floor(Math.random() * COLS));
                 }
                 picks[lvl] = col;
@@ -3716,7 +3721,7 @@ class Casino3DGame {
             };
             const flip = (guess) => {
                 if (flipping) return;
-                if (st !== 'play') { if (!canStake()) return; stake = mState.bet; this.changeBalance(-stake); st = 'play'; streak = 0; }
+                if (st !== 'play') { if (!canStake()) return; stake = mState.bet; mBal(-stake); st = 'play'; streak = 0; }
                 const result = Math.random() < 0.5 ? 0 : 1;
                 flipping = true; mState.status = 'Монета летит...'; let t = 0;
                 const iv = setInterval(() => {
@@ -3734,7 +3739,7 @@ class Casino3DGame {
             addBtn('РЕШКА', '#f59e0b', '#09090b', 0.0, 0.38, 0.42, 0.18, () => flip(1), deck);
             addBtn('ЗАБРАТЬ', '#22c55e', '#09090b', 0.45, 0.38, 0.42, 0.18, () => {
                 if (flipping || st !== 'play' || streak === 0) return;
-                const win = Math.round(stake * mNow()); st = 'won'; this.changeBalance(win); sound.bigWin();
+                const win = Math.round(stake * mNow()); st = 'won'; mBal(win); sound.bigWin();
                 mState.status = `Забрал ${mNow().toFixed(2)}x! +$${win.toLocaleString()}`; mState.updateScreen(); syncMachineSnapshot(true);
             }, deck);
 
@@ -3756,7 +3761,7 @@ class Casino3DGame {
                 ctx.fillStyle = '#71717a'; ctx.font = '13px Inter, sans-serif'; ctx.fillText(hist.slice(-8).map(h => names[h - 2]).join(' › '), 256, 244);
                 scr.tex.needsUpdate = true;
             };
-            const cashH = () => { if (st !== 'play' || mult <= 1) return; const win = Math.round(stake * mult); st = 'won'; this.changeBalance(win); sound.bigWin(); mState.status = `Забрал ${mult.toFixed(2)}x! +$${win.toLocaleString()}`; };
+            const cashH = () => { if (st !== 'play' || mult <= 1) return; const win = Math.round(stake * mult); st = 'won'; mBal(win); sound.bigWin(); mState.status = `Забрал ${mult.toFixed(2)}x! +$${win.toLocaleString()}`; };
             const redraw = () => { mState.updateScreen(); syncMachineSnapshot(true); };
             const guess = (dir) => {
                 if (st !== 'play') return;
@@ -3771,7 +3776,7 @@ class Casino3DGame {
             addBtn('СТАРТ', '#ec4899', '#ffffff', -0.56, 0.38, 0.32, 0.18, () => {
                 if (st === 'play') return;
                 if (!canStake()) return;
-                stake = mState.bet; this.changeBalance(-stake); st = 'play'; mult = 1; hist = [];
+                stake = mState.bet; mBal(-stake); st = 'play'; mult = 1; hist = [];
                 const c = deal(); rank = c.r; suit = c.s; sound.click(); mState.status = 'Выше или ниже? Ничья — проигрыш'; redraw();
             }, deck);
             addBtn('ВЫШЕ', '#22c55e', '#09090b', -0.18, 0.38, 0.32, 0.18, () => guess(1), deck);
@@ -3887,13 +3892,15 @@ class Casino3DGame {
                 continue;
             }
             let avatar = this.remoteAvatarMeshes[uid];
+            if (avatar && p.look && avatar.userData.lookKey !== JSON.stringify(p.look)) { this.remotePlayersGroup.remove(avatar); delete this.remoteAvatarMeshes[uid]; avatar = null; }
             if (!avatar) {
-                const rig = this.createGoofyCharacterMesh(0x0284c7, 0xa3b18a, 0xfacc15);
+                const LK = p.look || {};
+                const rig = this.createGoofyCharacterMesh(LK.shirt != null ? LK.shirt : 0x0284c7, LK.skin != null ? LK.skin : 0xa3b18a, LK.hat != null ? LK.hat : 0xfacc15, LK.acc != null ? LK.acc : null);
                 avatar = rig.root;
                 const label = this.createSignSprite('👤', p.name || 'ДРУГ', '#38bdf8');
                 label.scale.set(1.5, 0.48, 1); label.position.set(0, 2.35, 0);
                 avatar.add(label);
-                avatar.userData.rig = rig;
+                avatar.userData.rig = rig; avatar.userData.lookKey = p.look ? JSON.stringify(p.look) : undefined;
                 avatar.userData.targetX = Number(p.x) || 0;
                 avatar.userData.targetZ = Number(p.z) || 0;
                 avatar.userData.targetYaw = (Number(p.yaw) || 0) + Math.PI;
@@ -3907,7 +3914,7 @@ class Casino3DGame {
                 this.remotePlayersGroup.add(avatar);
                 this.remoteAvatarMeshes[uid] = avatar;
             }
-            const isAvatarInRagdoll = (avatar.userData.ragdollTimer || 0) > 0 || (avatar.userData.lieTimer || 0) > 0 || (avatar.userData.getUpTimer || 0) > 0;
+            const isAvatarInRagdoll = (avatar.userData.ragdollTimer || 0) > 0 || !!avatar.userData.sim;
             if (!isAvatarInRagdoll) {
                 avatar.userData.targetX = Number(p.x) || 0;
                 avatar.userData.targetZ = Number(p.z) || 0;
@@ -4030,9 +4037,6 @@ class Casino3DGame {
         }
 
         const kb = this.playerKnockback;
-        const activeCarryPose = window.friendCarryPose && window.friendCarryPose.until > Date.now()
-            ? window.friendCarryPose : null;
-        if (window.friendCarryPose && !activeCarryPose) window.friendCarryPose = null;
         if (kb.timer > 0) {
             kb.timer = Math.max(0, kb.timer - dt);
             kb.elapsed = (kb.elapsed || 0) + dt;
@@ -4091,7 +4095,7 @@ class Casino3DGame {
         }
 
         this.playerMoveSpeed = 0;
-        const isKnockedDown = !!activeCarryPose || (this.playerKnockback.timer || 0) > 0 || (this.playerKnockback.height || 0) > 0.05 || (kb.lie || 0) > 0 || (kb.getUp || 0) > 0;
+        const isKnockedDown = (this.playerKnockback.timer || 0) > 0 || (this.playerKnockback.height || 0) > 0.05 || (kb.lie || 0) > 0 || (kb.getUp || 0) > 0;
         if (!this.activeModal && !isKnockedDown) {
             const axis = input.getMoveAxis();
             if (axis.turn !== 0) input.yaw += axis.turn * 2.2 * dt;
@@ -4112,106 +4116,39 @@ class Casino3DGame {
             }
         }
 
-        if (activeCarryPose) {
-            const carryBlend = Math.min(1, dt * 22);
-            this.player.x += (Number(activeCarryPose.x) - this.player.x) * carryBlend;
-            this.player.z += (Number(activeCarryPose.z) - this.player.z) * carryBlend;
-            this.player.jumpHeight = Math.max(0, Number(activeCarryPose.y) || 0.85);
-            this.player.vy = 0;
-            this.playerKnockback.height = 0;
-            this.playerKnockback.vy = 0;
-            this.playerKnockback.roll = 0;
-        }
-        const totalAirHeight = activeCarryPose
-            ? Math.max(0, Number(activeCarryPose.y) || 0.85)
-            : Math.max(this.playerKnockback.height, this.player.jumpHeight || 0);
-        const headBob = activeCarryPose || totalAirHeight > 0.02 ? 0 : Math.sin(this.player.bobPhase) * 0.045;
-        const fallDrop = activeCarryPose ? 0 : (this.playerKnockback.height > 0 ? Math.min(0.55, Math.abs(this.playerKnockback.roll) * 0.22) : 0);
-        const pitchTilt = activeCarryPose ? 0 : (isKnockedDown ? Math.min(0.32, totalAirHeight * 0.14) : 0);
-        this.camera.position.set(this.player.x, Math.max(0.42, this.player.y + totalAirHeight + headBob - fallDrop - (activeCarryPose ? 0 : 1.05 * (kb.down || 0))), this.player.z);
+        const totalAirHeight = Math.max(this.playerKnockback.height, this.player.jumpHeight || 0);
+        const headBob = totalAirHeight > 0.02 ? 0 : Math.sin(this.player.bobPhase) * 0.045;
+        const fallDrop = this.playerKnockback.height > 0 ? Math.min(0.55, Math.abs(this.playerKnockback.roll) * 0.22) : 0;
+        const pitchTilt = isKnockedDown ? Math.min(0.32, totalAirHeight * 0.14) : 0;
+        this.camera.position.set(this.player.x, Math.max(0.42, this.player.y + totalAirHeight + headBob - fallDrop - 1.05 * (kb.down || 0)), this.player.z);
         this.camera.rotation.y = input.yaw;
         this.camera.rotation.x = Math.max(-0.78, Math.min(0.78, input.pitch - pitchTilt - 0.3 * (kb.down || 0)));
         this.camera.rotation.z = this.playerKnockback.roll;
+        if (window.friendCam) window.friendCam();
 
         for (const avatar of Object.values(this.remoteAvatarMeshes)) {
             if (!avatar) continue;
             const ud = avatar.userData;
             const rig = ud.rig;
             const oldX = avatar.position.x, oldZ = avatar.position.z;
-            if (ud.carryPose && ud.carryPose.until > Date.now()) {
-                const cp = ud.carryPose, blendCarry = 1 - Math.exp(-22 * dt);
-                avatar.position.x += (cp.x - avatar.position.x) * blendCarry;
-                avatar.position.y += (cp.y - avatar.position.y) * blendCarry;
-                avatar.position.z += (cp.z - avatar.position.z) * blendCarry;
-                avatar.rotation.x = 0; avatar.rotation.z = 0;
-                avatar.rotation.y = cp.yaw + Math.PI;
-                if (rig) {
-                    // Arms bent forward as if the player is being carried in someone's arms.
-                    rig.armL.rotation.set(-1.65, 0, 0.62);
-                    rig.armR.rotation.set(-1.65, 0, -0.62);
-                    rig.legL.rotation.set(0.62, 0, 0.12);
-                    rig.legR.rotation.set(0.62, 0, -0.12);
-                }
-                if (ud.swingTime > 0) ud.swingTime = Math.max(0, ud.swingTime - dt);
-                continue;
-            } else if (ud.carryPose) {
-                ud.carryPose = null;
-                if (rig) this.resetRigPose(rig);
-            }
-            const inRag = (ud.ragdollTimer || 0) > 0 || (ud.lieTimer || 0) > 0 || (ud.getUpTimer || 0) > 0;
+            const inRag = (ud.ragdollTimer || 0) > 0 || !!ud.sim;
             if (inRag) {
-                ud.ragT = (ud.ragT || 0) + dt;
-                const sign = ud.ragdollRollDir || 1;
                 if ((ud.ragdollTimer || 0) > 0) {
                     ud.ragdollTimer = Math.max(0, ud.ragdollTimer - dt);
                     ud.ragdollElapsed = (ud.ragdollElapsed || 0) + dt;
-                    const ratio = Math.min(1, ud.ragdollElapsed / Math.max(0.35, (ud.ragdollDuration || 1.35) * 0.85));
-                    let rnx = avatar.position.x + (ud.ragdollVx || 0) * dt;
-                    let rnz = avatar.position.z + (ud.ragdollVz || 0) * dt;
-                    if (ud.ragdollTimer <= 0.25 && Number.isFinite(ud.ragdollGoalX) && Number.isFinite(ud.ragdollGoalZ)) {
-                        rnx = rnx * 0.72 + ud.ragdollGoalX * 0.28;
-                        rnz = rnz * 0.72 + ud.ragdollGoalZ * 0.28;
-                    }
-                    rnx = Math.max(-10.2, Math.min(10.2, rnx));
-                    rnz = Math.max(-8.2, Math.min(8.2, rnz));
-                    if (!this.checkCollision3D(rnx, avatar.position.z)) avatar.position.x = rnx;
-                    if (!this.checkCollision3D(avatar.position.x, rnz)) avatar.position.z = rnz;
-                    ud.lieAmt = 0.25 + 0.75 * ratio * ratio;
-                    ud.flail = 1 - 0.35 * ratio;
-                    avatar.rotation.y += (ud.ragdollSpinY || 5) * (1 - 0.8 * ratio) * dt;
-                    if (ud.ragdollTimer === 0) {
-                        if (Number.isFinite(ud.ragdollGoalX) && !this.checkCollision3D(ud.ragdollGoalX, avatar.position.z)) avatar.position.x = ud.ragdollGoalX;
-                        if (Number.isFinite(ud.ragdollGoalZ) && !this.checkCollision3D(avatar.position.x, ud.ragdollGoalZ)) avatar.position.z = ud.ragdollGoalZ;
-                        ud.lieTimer = 0.95;
-                    }
-                } else if ((ud.lieTimer || 0) > 0) {
-                    ud.lieTimer = Math.max(0, ud.lieTimer - dt);
-                    ud.lieAmt += (1 - ud.lieAmt) * Math.min(1, dt * 12);
-                    ud.flail = Math.max(0, (ud.flail || 0) - dt * 4);
-                    if (ud.lieTimer === 0) ud.getUpTimer = 0.55;
-                } else {
-                    ud.getUpTimer = Math.max(0, ud.getUpTimer - dt);
-                    const g = ud.getUpTimer / 0.55;
-                    ud.lieAmt = g * g; ud.flail = 0;
+                    if (!ud.sim && window.VerletRagdoll) { ud.sim = makeRagdoll(rig, avatar, { vx: ud.ragdollVx || 0, vz: ud.ragdollVz || 0, vy: Math.max(3.5, ud.ragdollVy || 4), spin: ud.ragdollSpinY || 5 }); ud.simT = 0; ud.simBlend = false; }
                 }
-                if ((ud.jumpHeight || 0) > 0 || (ud.ragdollVy || 0) !== 0) {
-                    ud.ragdollVy = (ud.ragdollVy || 0) - 14.5 * dt;
-                    ud.jumpHeight = (ud.jumpHeight || 0) + ud.ragdollVy * dt;
-                    if (ud.jumpHeight <= 0) {
-                        ud.jumpHeight = 0;
-                        if (ud.ragdollVy < -2.6) { ud.ragdollVy = -ud.ragdollVy * 0.42; sound.penguinBounce(); } else ud.ragdollVy = 0;
-                    }
-                }
-                const lie = ud.lieAmt || 0, fl = ud.flail || 0;
-                avatar.rotation.order = 'YXZ';
-                avatar.rotation.x = sign * lie * (Math.PI / 2);
-                avatar.rotation.z = Math.sin(ud.ragT * 9 + (ud.ragSeed || 0)) * 0.22 * fl;
-                avatar.position.y = (ud.jumpHeight || 0) + 0.3 * lie;
-                this.ragdollLimbs(rig, ud.ragT, fl, lie * (1 - fl), ud.ragSeed || 0);
-                if (!((ud.ragdollTimer || 0) > 0 || (ud.lieTimer || 0) > 0 || (ud.getUpTimer || 0) > 0)) {
-                    avatar.rotation.x = 0; avatar.rotation.z = 0; avatar.position.y = 0;
-                    ud.lieAmt = 0; ud.jumpHeight = 0; ud.ragdollVy = 0; ud.jumpVy = 0;
-                    this.resetRigPose(rig);
+                if (ud.sim && ud.sim.dead) ud.sim = null;
+                if (ud.sim && ud.carry) {
+                    ud.sim.pins = ud.carryPins || null; ud.sim.step(dt); avatar.position.set(ud.sim.p.P.x, 0, ud.sim.p.P.z); ud.sim.apply();
+                } else if (ud.sim) {
+                    ud.simT += dt;
+                    ud.sim.anchor = Number.isFinite(ud.ragdollGoalX) ? { x: ud.ragdollGoalX, z: ud.ragdollGoalZ, k: 2.4 } : null;
+                    if (!ud.simBlend) {
+                        ud.sim.step(dt);
+                        if (((ud.ragdollTimer || 0) <= 0 && ud.simT > (ud.ragdollDuration || 1.35) + 0.9 && ud.sim.calm > 0.3) || ud.simT > 6) { ud.sim.beginBlend(); ud.simBlend = true; }
+                        else { avatar.position.set(ud.sim.p.P.x, 0, ud.sim.p.P.z); ud.sim.apply(); }
+                    } else if (ud.sim.blend(dt)) ud.sim = null;
                 }
             } else {
                 const blend = 1 - Math.exp(-12 * dt);
@@ -4241,52 +4178,28 @@ class Casino3DGame {
 
         for (const npc of this.npcs) {
             if (!npc || !npc.mesh) continue;
-            if ((npc.ragdollTimer || 0) > 0 && !npc.wasRag) {
-                npc.wasRag = true; npc.ragT = 0; npc.rgSign = Math.random() < 0.5 ? -1 : 1; npc.seed = Math.random() * 6.28;
-                npc.lieAmt = 0.25; npc.lieTimer = 0; npc.getUpTimer = 0; npc.mesh.rotation.order = 'YXZ';
-            } else if ((npc.ragdollTimer || 0) <= 0 && npc.wasRag) {
-                npc.wasRag = false; npc.lieTimer = 1.0; npc.getUpTimer = 0; npc.vx = 0; npc.vz = 0;
+            if ((npc.ragdollTimer || 0) > 0 && !npc.sim && window.VerletRagdoll) {
+                npc.sim = makeRagdoll(npc.rig, npc.mesh, { vx: npc.vx || 0, vz: npc.vz || 0, vy: Math.max(3.5, npc.vy || 0), spin: npc.vry || 5 });
+                npc.simT = 0; npc.simBlend = false;
             }
-            const npcPose = (flail, lie) => {
-                npc.mesh.rotation.order = 'YXZ';
-                npc.mesh.rotation.x = npc.rgSign * npc.lieAmt * (Math.PI / 2);
-                npc.mesh.rotation.z = Math.sin(npc.ragT * 9 + npc.seed) * 0.22 * flail;
-                npc.mesh.position.set(npc.x, (npc.y || 0) + 0.3 * npc.lieAmt, npc.z);
-                this.ragdollLimbs(npc.rig, npc.ragT, flail, lie, npc.seed);
-            };
-            if ((npc.ragdollTimer || 0) > 0) {
-                npc.ragdollTimer = Math.max(0, npc.ragdollTimer - dt);
-                npc.ragT += dt;
-                npc.vy = (npc.vy || 0) - 16.5 * dt;
-                npc.x = Math.max(-10.4, Math.min(10.4, npc.x + (npc.vx || 0) * dt));
-                npc.z = Math.max(-8.4, Math.min(8.4, npc.z + (npc.vz || 0) * dt));
-                npc.y = (npc.y || 0) + npc.vy * dt;
-                if (npc.y <= 0) {
-                    npc.y = 0;
-                    if (npc.vy < -2.4) { npc.vy = -npc.vy * 0.42; sound.penguinBounce(); } else npc.vy = 0;
-                    npc.vx *= 0.72; npc.vz *= 0.72;
-                }
-                const ratio = Math.min(1, npc.ragT / 1.7);
-                npc.lieAmt = 0.25 + 0.75 * ratio * ratio;
-                const fl = 1 - 0.4 * ratio;
-                npc.mesh.rotation.y += (npc.vry || 0) * (1 - 0.8 * ratio) * dt;
-                npcPose(fl, 0);
-            } else if ((npc.lieTimer || 0) > 0 || (npc.getUpTimer || 0) > 0) {
-                npc.vx = 0; npc.vz = 0; npc.ragT += dt;
-                if ((npc.y || 0) > 0) { npc.vy = (npc.vy || 0) - 16.5 * dt; npc.y = Math.max(0, npc.y + npc.vy * dt); if (npc.y === 0) npc.vy = 0; }
-                if (npc.lieTimer > 0) {
-                    npc.lieTimer = Math.max(0, npc.lieTimer - dt);
-                    npc.lieAmt += (1 - npc.lieAmt) * Math.min(1, dt * 12);
-                    if (npc.lieTimer === 0) npc.getUpTimer = 0.55;
-                } else {
-                    npc.getUpTimer = Math.max(0, npc.getUpTimer - dt);
-                    const g = npc.getUpTimer / 0.55; npc.lieAmt = g * g;
-                }
-                npcPose(0, npc.lieAmt);
-                if (!(npc.lieTimer > 0) && !(npc.getUpTimer > 0)) {
-                    npc.lieAmt = 0; npc.rx = 0; npc.rz = 0;
-                    npc.mesh.rotation.x = 0; npc.mesh.rotation.z = 0; npc.mesh.position.set(npc.x, 0, npc.z);
-                    this.resetRigPose(npc.rig);
+            if (npc.sim && npc.sim.dead) npc.sim = null;
+            if (npc.sim) {
+                npc.simT += dt;
+                if ((npc.ragdollTimer || 0) > 0) {
+                    npc.ragdollTimer = Math.max(0, npc.ragdollTimer - dt);
+                    npc.vy = (npc.vy || 0) - 16.5 * dt;
+                    npc.x = Math.max(-10.4, Math.min(10.4, npc.x + (npc.vx || 0) * dt));
+                    npc.z = Math.max(-8.4, Math.min(8.4, npc.z + (npc.vz || 0) * dt));
+                    npc.y = (npc.y || 0) + npc.vy * dt;
+                    if (npc.y <= 0) { npc.y = 0; npc.vy = npc.vy < -2.4 ? -npc.vy * 0.42 : 0; npc.vx *= 0.72; npc.vz *= 0.72; }
+                } else { npc.vx = 0; npc.vz = 0; npc.y = 0; }
+                npc.sim.anchor = { x: npc.x, z: npc.z, k: 2.4 };
+                if (!npc.simBlend) {
+                    npc.sim.step(dt);
+                    if (((npc.ragdollTimer || 0) <= 0 && npc.simT > 2.6 && npc.sim.calm > 0.35) || npc.simT > 6) { npc.sim.beginBlend(); npc.simBlend = true; }
+                    else { npc.mesh.position.set(npc.sim.p.P.x, 0, npc.sim.p.P.z); npc.sim.apply(); }
+                } else if (npc.sim.blend(dt)) {
+                    npc.sim = null; npc.mesh.position.set(npc.x, 0, npc.z);
                     npc.vx = (Math.random() - 0.5) * 2.2; npc.vz = (Math.random() - 0.5) * 2.2;
                 }
             } else {
@@ -4444,10 +4357,13 @@ var game = window.game;
 'use strict';
 const G = () => window.game;
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const SEQ_A = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowRight','ArrowLeft','ArrowRight','ArrowLeft','KeyB','KeyA'];
+const SEQ_B = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','KeyB','KeyA'];
 const MACH = ['slots','plinko','dice','blackjack','ducks','roulette','crash','wheel','mines','dragon','coin','hilo'];
 const SHIRTS = [0x0ea5e9, 0xf472b6, 0x22c55e, 0xf59e0b, 0xa78bfa, 0xef4444, 0x14b8a6];
 const HATS = [0xf97316, 0x38bdf8, 0xe879f9, 0xfacc15, 0x84cc16];
-let tcc = null, esc = null;
+const NAMES = ['Саня', 'Макс', 'Дима', 'Влад', 'Тёма', 'Лёха'];
+let tcc = null, esc = null, buf = [], lastBigWin = 0;
 const toast = (t, c) => { const g = G(); if (g) g.showToast(t, c || 'amber'); };
 const fwd = (yaw) => V3(-Math.sin(yaw), 0, -Math.cos(yaw));
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
@@ -4473,7 +4389,8 @@ function buildVan() {
 }
 
 function startTcc(f) {
-    const g = G(); f.state = 'taken'; sound.lose();
+    const g = G(); if (tcc) { setTimeout(() => startTcc(f), 3000); return; }
+    f.state = 'taken'; sound.lose();
     toast('🚐 ПРОИГРЫШ! Приехал зелёный фургон ТЦК...', 'red');
     const van = buildVan(); van.position.set(-17, 0, -1); g.scene.add(van);
     const guys = [0, 1].map(() => { const rig = g.createGoofyCharacterMesh(0x3f6212, 0xa3b18a, 0x14532d); rig.root.visible = false; g.scene.add(rig.root); return { rig, ph: 0 }; });
@@ -4498,7 +4415,7 @@ function tccStep(dt, t) {
         if (v.position.x >= k.tx) { k.phase = 'run'; k.guys.forEach((gy, i) => { gy.rig.root.visible = true; gy.rig.root.position.set(v.position.x - 0.3 + i * 0.7, 0, v.position.z + 1.5); }); }
     } else if (k.phase === 'run') {
         const fp = f.rig.root.position;
-        const d0 = runTo(k.guys[0], fp.x, fp.z, 6.2, dt); runTo(k.guys[1], fp.x + 0.6, fp.z, 6.2, dt);
+        const d0 = runTo(k.guys[0], fp.x, fp.z, 4.6, dt); runTo(k.guys[1], fp.x + 0.6, fp.z, 4.6, dt);
         f.rig.root.rotation.y += 5 * dt; g.ragdollLimbs(f.rig, t, 0.8, 0.2, f.seed);
         if (d0 < 0.9) { k.phase = 'carry'; sound.penguinBounce(); toast('😱 «Пройдёмте с нами»...', 'red'); }
     } else if (k.phase === 'carry') {
@@ -4513,8 +4430,8 @@ function tccStep(dt, t) {
         k.speed = Math.min(14, (k.speed || 2) + 10 * dt); v.position.x += k.speed * dt; spin(k.speed);
         if (v.position.x > 20) {
             g.scene.remove(v); k.guys.forEach((gy) => g.scene.remove(gy.rig.root)); tcc = null;
-            if (f.real && String(f.uid) === myId()) startEscape(f);
-            else toast(`🚐 ${f.name} увезли в фургоне... паркур проходит только сам игрок`, 'red');
+            f.rig.headGroup.visible = true;
+            if (f.me) { startEscape(f); setTimeout(() => fade(0), 400); } else { real.watch = { uid: f.uid, t: performance.now() / 1000 }; banner(`🚐 ${f.name} увезли в фургоне... ждём, сбежит ли он`); }
         }
     }
 }
@@ -4548,27 +4465,17 @@ function startEscape(f) {
     const hud = document.createElement('div');
     hud.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:80;font:800 15px Inter,sans-serif;color:#fff;background:rgba(21,128,61,.85);padding:8px 16px;border-radius:12px;text-align:center;pointer-events:none';
     document.body.appendChild(hud);
-    g.state = 'ESCAPE';
-    g.closeModal && g.closeModal(false);
-    window.input.keys = {};
+    g.state = 'ESCAPE'; g.closeModal && g.closeModal(false); window.input.lockPointer && window.input.lockPointer();
     window.input.yaw = 0; window.input.pitch = 0;
-    // Move the actual local player and camera into the isolated parkour space immediately.
-    g.player.x = OX; g.player.z = 1; g.player.y = 1.65;
-    g.player.jumpHeight = 0; g.player.vy = 0;
-    g.camera.position.set(OX, 1.65, 1);
-    g.camera.rotation.set(0, 0, 0, 'YXZ');
-    window.input.lockPointer && window.input.lockPointer();
     esc = { f, OX, grp, solids, lamp, chRig, hud, goalZ, goalTop: top, x: 0, y: 0, z: 1, vy: 0, onG: true, t: 0, chZ: 9, last: performance.now(), ph: 0 };
     toast('🏃 ПОБЕГ ИЗ ФУРГОНА! W — бег, Пробел — прыжок. Беги к зелёному столбу!', 'red');
     requestAnimationFrame(escLoop);
 }
 
 function endEscape(win, why) {
-    const g = G(), e = esc; if (!e) return; esc = null;
+    const g = G(), e = esc; if (!e) return; esc = null; e.f.state = 'idle';
     g.scene.remove(e.grp); g.scene.remove(e.lamp); e.hud.remove();
     if (win) {
-        window.friendCarryPose = null;
-        real.carried = null;
         g.state = 'PLAYING'; g.resetPlayerPosition();
         g.camera.position.set(g.player.x, g.player.y, g.player.z); window.input.yaw = 0;
         const f = e.f;
@@ -4577,9 +4484,7 @@ function endEscape(win, why) {
             sendPkt({ type: 'fr_escape', targetUid: f.uid, ok: true }); f.rig.root.visible = false; sound.bigWin(); toast('🏁 Ты сбежал от ТЦК и вернулся в игру!', 'green');
         }
     } else {
-        window.friendCarryPose = null;
-        real.carried = null;
-        const f = e.f;
+        const f = e.f; g.scene.remove(f.rig.root);
         if (f.real) sendPkt({ type: 'fr_escape', targetUid: f.uid, ok: false });
         g.changeBalance(-g.balance); g.state = 'PLAYING';
         g.triggerGameOver(why);
@@ -4608,6 +4513,7 @@ function escLoop(now) {
     const speed = Math.min(6.6, 5.0 + e.t * 0.08); e.chZ -= speed * dt;
     const ch = e.chRig.root, cs = Math.sin(e.t * 13); ch.position.set(ch.position.x + (e.x - ch.position.x) * Math.min(1, dt * 3), ch.position.y + (e.y - ch.position.y) * Math.min(1, dt * 6), e.chZ); ch.rotation.y = Math.PI;
     e.chRig.legL.rotation.x = cs * 0.9; e.chRig.legR.rotation.x = -cs * 0.9; e.chRig.armL.rotation.x = -cs * 0.8; e.chRig.armR.rotation.x = cs * 0.8;
+    if (e.f.real) { e.pt = (e.pt || 0) - dt; if (e.pt <= 0) { e.pt = 0.25; sendPkt({ type: 'fr_prog', targetUid: e.f.uid, left: Math.max(0, Math.round(e.z - e.goalZ)), gap: +Math.max(0, e.z - e.chZ).toFixed(1) }); } }
     e.hud.textContent = `🚐 ПОБЕГ! До выхода: ${Math.max(0, Math.round(e.z - e.goalZ))} м · ТЦК позади: ${Math.max(0, (e.z - e.chZ)).toFixed(1)} м`;
     if (e.y < -9) return endEscape(false, 'Ты сорвался с крыши, а друга увезли в ТЦК. Все деньги конфискованы. Вы проиграли.');
     if (e.chZ <= e.z + 1.0) return endEscape(false, 'Тебя догнал ТЦК. Все деньги конфискованы. Вы проиграли.');
@@ -4615,114 +4521,100 @@ function escLoop(now) {
     requestAnimationFrame(escLoop);
 }
 
-// ===== Управление настоящими игроками из мультиплеера =====
-const real = { holding: null, carried: null, bets: [], proxies: {}, pendingBets: [], activeBetIds: new Set(), carryT: 0, hands: null };
-window.friendCarryPose = null;
-
-function setCarryHandsVisible(on) {
-    const g = G();
-    if (!g || !g.camera) return;
-    if (!real.hands) {
-        const group = new THREE.Group();
-        const sleeve = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.8 });
-        const skin = new THREE.MeshStandardMaterial({ color: 0xc99a72, roughness: 0.9 });
-        const armGeo = new THREE.CylinderGeometry(0.085, 0.12, 0.68, 10);
-        const handGeo = new THREE.SphereGeometry(0.13, 12, 10);
-        const left = new THREE.Mesh(armGeo, sleeve), right = new THREE.Mesh(armGeo, sleeve);
-        left.position.set(-0.34, -0.17, -0.08); left.rotation.z = 0.78;
-        right.position.set(0.34, -0.17, -0.08); right.rotation.z = -0.78;
-        const lh = new THREE.Mesh(handGeo, skin), rh = new THREE.Mesh(handGeo, skin);
-        lh.position.set(-0.12, 0.13, -0.32); rh.position.set(0.12, 0.13, -0.32);
-        group.add(left, right, lh, rh);
-        group.position.set(0, -0.56, -0.72);
-        group.visible = false;
-        g.camera.add(group);
-        real.hands = group;
-    }
-    real.hands.visible = !!on;
-}
-
-function currentCarryPose() {
-    const g = G(), yaw = window.input.yaw;
-    const d = fwd(yaw), rx = Math.cos(yaw), rz = -Math.sin(yaw);
-    return {
-        x: +(g.player.x + d.x * 1.02 + rx * 0.22).toFixed(3),
-        y: 0.92,
-        z: +(g.player.z + d.z * 1.02 + rz * 0.22).toFixed(3),
-        yaw: Number(yaw) || 0,
-        until: Date.now() + 650
-    };
-}
-
-function applyCarryPoseToAvatar(uid, pose) {
-    const avatar = avatars()[uid];
-    if (!avatar || !pose) return;
-    avatar.userData.carryPose = {
-        x: Number(pose.x) || 0,
-        y: Number(pose.y) || 0.92,
-        z: Number(pose.z) || 0,
-        yaw: Number(pose.yaw) || 0,
-        until: Date.now() + 650
-    };
-    avatar.userData.targetX = avatar.userData.carryPose.x;
-    avatar.userData.targetZ = avatar.userData.carryPose.z;
-    avatar.userData.ragdollTimer = 0;
-    avatar.userData.lieTimer = 0;
-    avatar.userData.getUpTimer = 0;
-    avatar.userData.jumpHeight = 0;
-    avatar.userData.jumpVy = 0;
-    avatar.position.y = avatar.userData.carryPose.y;
-}
-
-function clearCarryAvatar(uid) {
-    const avatar = avatars()[uid];
-    if (avatar && avatar.userData) avatar.userData.carryPose = null;
-}
-
+// ===== ввод =====
 window.addEventListener('keydown', (e) => {
-    const g = G();
-    if (!g || g.state !== 'PLAYING' || g.activeModal || /INPUT|TEXTAREA/.test((e.target && e.target.tagName) || '')) return;
-    if (e.code === 'KeyE' && !e.repeat) {
-        if (real.holding) dropReal();
-        else tryGrabReal();
-    } else if (e.code === 'KeyQ' && !e.repeat && real.holding) {
-        throwReal();
+    const g = G(); if (!g || g.state !== 'PLAYING' || /INPUT|TEXTAREA/.test((e.target && e.target.tagName) || '')) return;
+    buf.push(e.code); if (buf.length > 10) buf.shift();
+    const same = (S) => S.every((c, i) => buf[i] === c);
+    if (buf.length === 10 && (same(SEQ_A) || same(SEQ_B))) {
+        buf = [];
+        if (!g.friendsUnlocked) { g.friendsUnlocked = true; sound.bigWin(); toast('🤝 СЕКРЕТНЫЙ КОД! E — поднять/поставить друга, Q — бросить', 'green'); }
+        toast(hasRemote() ? '🤝 Подойди к другу и нажми E, чтобы поднять его (Q — бросить)' : '🤝 Код принят, но друзей онлайн нет. Пригласи кого-нибудь в комнату!', 'green');
+        return;
     }
+    if (!g.friendsUnlocked || g.activeModal) return;
+    if (e.code === 'KeyE' && !e.repeat && real.holding) { dropReal(); return; }
+    if (e.code === 'KeyQ' && !e.repeat && real.holding) { throwReal(); return; }
+    if (e.code === 'KeyE' && !e.repeat) { if (!tryGrabReal()) toast('Рядом нет друга (нужен подключённый игрок в радиусе 2.5 м)'); return; }
 });
+
+// ===== НАСТОЯЩИЕ ДРУЗЬЯ (игроки из мультиплеера) =====
+const real = { holding: null, carried: null, bets: [], proxies: {}, carryT: 0 };
 const myId = () => String(window.myUid || (typeof myUid !== 'undefined' ? myUid : '') || '');
 const sendPkt = (p) => { if (window.mpSync) window.mpSync.sendWorldPacket(p); };
 const avatars = () => (G().remoteAvatarMeshes || {});
 const nameOf = (uid) => { const p = (G().remotePlayers || {})[uid]; return (p && p.name) || 'ДРУГ'; };
 const lockMe = (on) => { const k = G().playerKnockback; if (on) { k.lie = 3; k.lieDone = true; k.restRoll = 0.8; } else { k.lie = 0; k.getUp = 0.6; } };
 const hideAvatar = (uid, hide) => { const a = avatars()[uid]; if (a) a.visible = !hide; };
-// Учитываем только настоящих игроков из мультиплеера.
-const hasRemote = () => {
-    const g = G();
-    const self = myId();
-    return Object.keys(avatars()).some((uid) => uid !== self) ||
-        Object.keys(g.remotePlayers || {}).some((uid) => uid !== self);
-};
+const hasRemote = () => Object.keys(avatars()).length > 0;
 const ejectHash = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 100; };
 
-function proxyFor(uid, displayName = '') {
-    const g = G();
-    let f = real.proxies[uid];
-    if (!f) {
-        const h = [...String(uid)].reduce((a, c) => a + c.charCodeAt(0), 0);
-        const rig = g.createGoofyCharacterMesh(SHIRTS[h % SHIRTS.length], 0xa3b18a, HATS[h % HATS.length]);
-        rig.root.rotation.order = 'YXZ'; rig.root.visible = false; g.scene.add(rig.root);
-        // Тег находится внутри головы, поэтому остаётся видимым и в режиме Plinko,
-        // где тело мини-игрока специально скрывается.
-        const tag = g.createSignSprite('👤', displayName || nameOf(uid), '#facc15');
-        tag.scale.set(1.65, 0.42, 1);
-        tag.position.set(0, 0.5, 0.02);
-        rig.headGroup.add(tag);
-        f = { uid, real: true, me: uid === myId(), name: displayName || nameOf(uid), rig, state: 'idle', seed: Math.random() * 6, lie: 0, vel: V3(), tag };
-        real.proxies[uid] = f;
-    }
-    f.me = uid === myId();
-    f.name = displayName || nameOf(uid) || f.name || 'ДРУГ';
-    return f;
+function lookOf(uid) { if (uid === myId()) return window.myLook; const p = (G().remotePlayers || {})[uid]; return (p && p.look) || null; }
+function faceTex(f, w, h, bg) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d');
+    if (bg) { x.fillStyle = bg; x.fillRect(0, 0, w, h); }
+    window.drawFace(x, w / 2, h / 2, Math.min(w, h) * 0.46, f.look); const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t;
+}
+function cardProp(f) {
+    const c = document.createElement('canvas'); c.width = 256; c.height = 360; const x = c.getContext('2d');
+    x.fillStyle = '#f8fafc'; x.beginPath(); x.roundRect(4, 4, 248, 352, 22); x.fill(); x.strokeStyle = '#cbd5e1'; x.lineWidth = 4; x.stroke();
+    x.fillStyle = '#dc2626'; x.textAlign = 'left'; x.font = '900 44px Inter,Arial'; x.fillText('K', 22, 58); x.font = '40px sans-serif'; x.fillText('♥', 22, 100);
+    x.save(); x.translate(256, 360); x.rotate(Math.PI); x.font = '900 44px Inter,Arial'; x.fillText('K', 22, 58); x.font = '40px sans-serif'; x.fillText('♥', 22, 100); x.restore();
+    x.fillStyle = '#fde68a'; x.beginPath(); x.roundRect(58, 80, 140, 200, 30); x.fill(); window.drawFace(x, 128, 185, 52, f.look);
+    x.fillStyle = '#111'; x.textAlign = 'center'; x.font = '800 22px Inter,Arial'; x.fillText(String(f.name).slice(0, 12), 128, 318);
+    const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.87), new THREE.MeshBasicMaterial({ map: t, side: THREE.DoubleSide }));
+    const g = new THREE.Group(); g.add(m); G().scene.add(g); return g;
+}
+function rocketProp(f) {
+    const g = new THREE.Group(), S = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.4, metalness: 0.2, ...o });
+    const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz); g.add(m); return m; };
+    add(new THREE.CylinderGeometry(0.2, 0.2, 0.9, 16), S(f.look.shirt), 0, 0.45, 0); add(new THREE.ConeGeometry(0.2, 0.42, 16), S(0xdc2626), 0, 1.1, 0);
+    [0, 2.1, 4.2].forEach((a) => add(new THREE.BoxGeometry(0.04, 0.34, 0.28), S(0xdc2626), Math.sin(a) * 0.24, 0.1, Math.cos(a) * 0.24, 0, a, 0));
+    const flame = add(new THREE.ConeGeometry(0.13, 0.5, 10), new THREE.MeshBasicMaterial({ color: 0xfb923c }), 0, -0.25, 0, Math.PI); g.userData.flame = flame;
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.17, 24), new THREE.MeshBasicMaterial({ map: faceTex(f, 128, 128, hexCss(f.look.shirt)) })); disc.position.set(0, 0.5, 0.205); g.add(disc);
+    add(new THREE.TorusGeometry(0.17, 0.025, 8, 24), S(0xd6ad55, { metalness: 0.9 }), 0, 0.5, 0.205);
+    g.scale.setScalar(1.25); G().scene.add(g); return g;
+}
+const hexCss = (n) => '#' + Number(n).toString(16).padStart(6, '0');
+function dropProp(f) { if (f.prop) { G().scene.remove(f.prop); f.prop = null; } }
+const carryPins = (cx, cz, yaw) => { const rx = Math.cos(yaw), rz = -Math.sin(yaw); return { DL: V3(cx - rx * 0.3, 1.8, cz - rz * 0.3), DR: V3(cx + rx * 0.3, 1.8, cz + rz * 0.3) }; };
+real.carryInfo = {};
+function startCarryVisual(uid) {
+    const a = avatars()[uid]; if (!a || !window.makeRagdoll) return; const ud = a.userData; if (ud.sim && ud.carry) return;
+    if (ud.sim) { ud.sim.finish(); ud.sim = null; }
+    ud.sim = window.makeRagdoll(ud.rig, a, { calm: true }); if (!ud.sim) return;
+    ud.carry = true; ud.simT = 0; ud.simBlend = false; ud.ragdollTimer = 0;
+}
+function endCarryVisual(uid) {
+    delete real.carryInfo[uid]; const a = avatars()[uid]; if (!a) return; const ud = a.userData;
+    if (ud.carry) { ud.carry = false; ud.carryPins = null; if (ud.sim) { ud.sim.pins = null; ud.sim.beginBlend(); ud.simBlend = true; } }
+}
+function setPins(uid, cx, cz, yaw) { const a = avatars()[uid]; if (a && a.userData.carry) a.userData.carryPins = carryPins(cx, cz, yaw); }
+let fadeEl = null;
+function fade(a) {
+    if (!fadeEl) { fadeEl = document.createElement('div'); fadeEl.style.cssText = 'position:fixed;inset:0;background:#000;z-index:70;pointer-events:none;opacity:0;transition:opacity .7s'; document.body.appendChild(fadeEl); }
+    fadeEl.style.opacity = a;
+}
+window.friendCam = function () {
+    const g = G(); if (!tcc || !tcc.f.me || g.state !== 'PLAYING') return;
+    const k = tcc, f = k.f, t = performance.now() / 1000;
+    if (k.phase === 'arrive') return;
+    if (k.phase === 'load' || k.phase === 'leave') { fade(1); return; }
+    f.rig.root.updateMatrixWorld(true); const head = V3(); f.rig.headGroup.getWorldPosition(head); f.rig.headGroup.visible = false;
+    const tgt = (k.phase === 'run' ? k.guys[0].rig.root.position : k.van.position).clone().add(V3(0, 1.2, 0));
+    g.camera.position.set(head.x, head.y + Math.sin(t * 9) * 0.04, head.z); g.camera.lookAt(tgt);
+    if (k.phase === 'carry') g.camera.rotation.z += Math.sin(t * 7) * 0.08;
+};
+
+function proxyFor(uid) {
+    if (real.proxies[uid]) return real.proxies[uid];
+    const g = G(), h = [...uid].reduce((a, c) => a + c.charCodeAt(0), 0);
+    const L = lookOf(uid) || { shirt: SHIRTS[h % SHIRTS.length], skin: 0xa3b18a, hat: HATS[h % HATS.length], acc: 0 };
+    const rig = g.createGoofyCharacterMesh(L.shirt, L.skin, L.hat, L.acc);
+    rig.root.rotation.order = 'YXZ'; rig.root.visible = false; g.scene.add(rig.root);
+    const f = { look: L, uid, real: true, me: uid === myId(), name: nameOf(uid), rig, state: 'idle', seed: Math.random() * 6, lie: 0, vel: V3() };
+    real.proxies[uid] = f; return f;
 }
 function restoreRig(f) { f.rig.root.children.forEach((c) => { c.visible = true; }); f.rig.root.scale.setScalar(1); f.rig.root.rotation.set(0, 0, 0); G().resetRigPose(f.rig); }
 
@@ -4733,24 +4625,16 @@ function tryGrabReal() {
         const d = Math.hypot(a.position.x - g.player.x, a.position.z - g.player.z); if (d < bd) { bd = d; best = uid; }
     }
     if (!best) return false;
-    real.holding = best;
-    real.carryT = 0;
-    setCarryHandsVisible(true);
-    const pose = currentCarryPose();
-    applyCarryPoseToAvatar(best, pose);
-    sendPkt({ type: 'fr_grab', targetUid: best, pose });
-    toast(`🤲 Ты поднял ${nameOf(best)} на руки! E — поставить, Q — бросить`); return true;
+    real.holding = best; sendPkt({ type: 'fr_grab', targetUid: best }); startCarryVisual(best);
+    toast(`🤲 Ты поднял ${nameOf(best)}! E — поставить, Q — бросить (в автомат — на ставку)`); return true;
 }
 function dropReal() {
     const g = G(), uid = real.holding, d = fwd(window.input.yaw); real.holding = null;
-    setCarryHandsVisible(false); clearCarryAvatar(uid);
     let x = g.player.x + d.x * 1.4, z = g.player.z + d.z * 1.4; if (g.checkCollision3D(x, z)) { x = g.player.x; z = g.player.z; }
-    sendPkt({ type: 'fr_drop', targetUid: uid, x, z }); toast('Ты поставил друга на пол');
+    sendPkt({ type: 'fr_drop', targetUid: uid, x, z }); endCarryVisual(uid); toast('Ты поставил друга на пол');
 }
 function throwReal() {
     const g = G(), uid = real.holding, d = fwd(window.input.yaw); real.holding = null;
-    setCarryHandsVisible(false); clearCarryAvatar(uid);
-    sendPkt({ type: 'fr_throw', targetUid: uid });
     const from = { x: g.player.x + d.x, z: g.player.z + d.z }; let end = { x: from.x, z: from.z }, mach = null;
     for (let k = 0.5; k <= 9; k += 0.3) {
         const px = from.x + d.x * k, pz = from.z + d.z * k;
@@ -4762,241 +4646,109 @@ function throwReal() {
     }
     const eid = `${Date.now()}_fr_${Math.random().toString(36).slice(2, 6)}`, dist = Math.hypot(end.x - from.x, end.z - from.z);
     const data = { eventId: eid, targetUid: uid, floor: g.currentFloor, startX: +from.x.toFixed(2), startY: 1.0, startZ: +from.z.toFixed(2), endX: +end.x.toFixed(2), endY: 0.5, endZ: +end.z.toFixed(2), vx: +(d.x * 11).toFixed(2), vz: +(d.z * 11).toFixed(2), vy: 5.2, duration: Math.min(2.2, 1.2 + dist * 0.12), fallSummary: 'friend throw' };
-    sendPkt({ type: 'playerRagdoll', ...data }); g.startRemoteAvatarRagdoll(uid, data); sound.penguinBounce();
-    if (mach) {
-        const betPacket = {
-            type: 'fr_bet', eventId: eid, eid, targetUid: uid,
-            targetName: nameOf(uid), machineId: mach.id,
-            floor: g.currentFloor, startAt: Date.now() + 650
-        };
-        sendPkt(betPacket);
-        startBetReal({ ...betPacket, uid: myId() });
-        toast(`🎰 ${nameOf(uid)} отправлен в «${mach.name || mach.type}»!`, 'green');
-    }
+    endCarryVisual(uid); sendPkt({ type: 'playerRagdoll', ...data }); g.startRemoteAvatarRagdoll(uid, data); sound.penguinBounce();
+    if (mach) { sendPkt({ type: 'fr_bet', targetUid: uid, machineId: mach.id, eid }); startBetReal({ uid: myId(), targetUid: uid, machineId: mach.id, eid }); toast(`🎰 ${nameOf(uid)} брошен в автомат! Ждём результат...`); }
 }
 
-function queueBetPacket(packet) {
-    const id = String(packet.eventId || packet.eid || '');
-    if (!id || real.pendingBets.some((q) => String(q.packet.eventId || q.packet.eid || '') === id)) return;
-    real.pendingBets.push({ packet: { ...packet }, expires: Date.now() + 12000 });
+function banner(text) {
+    let b = document.getElementById('frBanner');
+    if (!text) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('div'); b.id = 'frBanner'; b.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:80;font:800 15px Inter,sans-serif;color:#fff;background:rgba(126,34,206,.9);padding:9px 18px;border-radius:12px;text-align:center;pointer-events:none;max-width:90vw'; document.body.appendChild(b); }
+    b.textContent = text;
 }
-
-function startBetReal(m, queueIfUnavailable = true) {
-    const g = G();
-    if (!m || !m.targetUid || !m.machineId || !g) return false;
-    const uid = String(m.targetUid);
-    const eid = String(m.eventId || m.eid || `${m.uid || 'player'}_${uid}_${m.machineId}_${m.startAt || 0}`);
-    if (real.activeBetIds.has(eid) || real.bets.some((b) => b.eid === eid)) return true;
-
-    const floor = Number.isFinite(Number(m.floor)) ? Number(m.floor) : Number(g.currentFloor);
-    const machine = floor === Number(g.currentFloor)
-        ? g.sceneObjects.find((x) => x && x.id === m.machineId && x.group)
-        : null;
-    if (!machine) {
-        if (queueIfUnavailable) queueBetPacket({ ...m, eventId: eid, eid, floor });
-        return false;
-    }
-
-    real.activeBetIds.add(eid);
-    if (real.activeBetIds.size > 128) real.activeBetIds.delete(real.activeBetIds.values().next().value);
-    const f = proxyFor(uid, m.targetName || nameOf(uid));
-    f.name = m.targetName || nameOf(uid) || f.name;
-    f.holderUid = String(m.uid || '');
-    f.machine = machine;
-    f.eid = eid;
-    f.floor = floor;
-    const startAt = Number(m.startAt);
-    const delay = Number.isFinite(startAt) ? Math.max(0, Math.min(1.2, (startAt - Date.now()) / 1000)) : 0.65;
-    f.state = 'ride';
-    f.t0 = performance.now() / 1000 + delay;
-    f.dur = 3.55;
-    f.shown = false;
-    f.resolved = false;
+function startBetReal(m) {
+    const g = G(), o = g.sceneObjects.find((x) => x.id === m.machineId); if (!o) return;
+    const f = proxyFor(String(m.targetUid)); f.name = nameOf(f.uid); f.holderUid = String(m.uid); f.machine = o; f.eid = m.eid;
+    f.state = 'ride'; f.t0 = performance.now() / 1000 + 1.0; f.shown = false; f.resolved = false; f.staked = 0; f.paid = 0; f.started = false;
     if (!real.bets.includes(f)) real.bets.push(f);
-    return true;
+    banner(f.holderUid === myId() ? `🎰 ${f.name} на кону! Выиграй раунд на этом автомате (≥1x), иначе приедет ТЦК` : (f.me ? '🎰 Тебя поставили на автомат! Всё зависит от друга...' : `🎰 ${f.name} на кону — ждём результат раунда`));
 }
+function cancelBet(f, why) {
+    real.bets = real.bets.filter((b) => b !== f); banner(null); dropProp(f); restoreRig(f); f.rig.root.visible = false; f.resolved = true;
+    hideAvatar(f.uid, false); if (f.me) lockMe(false); toast(why, 'amber');
+}
+function onResult(f, win) {
+    const g = G(), o = f.machine; if (f.resolved) return; f.resolved = true; banner(null);
+    real.bets = real.bets.filter((b) => b !== f); dropProp(f); restoreRig(f); f.rig.root.visible = true;
+    if (win) resolveWinReal(f);
+    else { f.state = 'taken'; const d = V3(g.player.x - o.x, 0, g.player.z - o.z).normalize(); f.rig.root.position.set(o.x + d.x * 1.6, 0, o.z + d.z * 1.6); startTcc(f); }
+}
+window.friendRound = function (mid, d, isLoss) {
+    const me = myId();
+    const f = real.bets.find((b) => b.machine && b.machine.id === mid && b.holderUid === me && b.shown && !b.resolved);
+    const x = f; if (!x) return;
+    if (d < 0) { x.staked += -d; x.started = true; return; }
+    if (!x.started) return;
+    if (d > 0) x.paid += d;
+    clearTimeout(x.evalT);
+    x.evalT = setTimeout(() => {
+        const win = x.paid >= x.staked;
+        sendPkt({ type: 'fr_result', targetUid: f.uid, win }); onResult(f, win);
+    }, 150);
+};
 
 function ridePose(f, o, t, now) {
-    const group = o && o.group;
-    const r = f.rig.root;
-    if (!group || !r) return;
-    group.updateMatrixWorld(true);
-    const W = (x, y, z) => group.localToWorld(V3(x, y, z));
-    const type = o.type;
-    const bob = Math.sin(now * 5) * 0.035;
-    const rig = f.rig;
-    const place = (p, scale, tilt = 0) => {
-        r.children.forEach((c) => { c.visible = true; });
-        r.scale.setScalar(scale);
-        r.rotation.set(0, group.rotation.y, tilt);
-        r.position.copy(p);
-    };
-
-    if (type === 'plinko') {
-        // В Plinko игрок превращается в шарик-голову и проходит по дорожке с отскоками.
-        r.children.forEach((c) => { c.visible = c === rig.headGroup; });
-        const scale = 0.62;
-        const progress = Math.min(1, Math.max(0, t / 3.1));
-        const row = Math.floor(t * 3.6);
-        const side = row % 2 === 0 ? 1 : -1;
-        const x = Math.sin(t * 10.5) * (0.16 + progress * 0.24) + side * 0.07;
-        const y = 2.05 - progress * 0.76 + Math.abs(Math.sin(t * 9)) * 0.035;
-        const p = W(x, y, 0.67);
-        r.scale.setScalar(scale);
-        r.position.set(p.x, p.y - 1.56 * scale, p.z);
-        r.rotation.set(0, group.rotation.y, Math.sin(t * 8) * 0.45 + t * 1.4);
+    const g = o.group, r = f.rig.root; g.updateMatrixWorld();
+    if (o.type === 'crash' || o.type === 'hilo' || o.type === 'blackjack') {
+        r.visible = false; const bobP = Math.sin(now * 5) * 0.05;
+        if (!f.prop) f.prop = o.type === 'crash' ? rocketProp(f) : cardProp(f);
+        const pp = g.localToWorld(V3(0, o.type === 'crash' ? 3.55 + bobP : 3.2 + bobP * 0.5, o.type === 'crash' ? 0.05 : 0.14));
+        f.prop.position.copy(pp); f.prop.rotation.set(0, g.rotation.y + (o.type === 'crash' ? 0 : Math.sin(now * 2) * 0.35), o.type === 'crash' ? -0.2 + Math.sin(now * 3) * 0.05 : 0);
+        if (f.prop.userData.flame) f.prop.userData.flame.scale.y = 0.8 + Math.random() * 0.6;
         return;
     }
-
+    r.visible = true; if (f.prop) dropProp(f);
+    const W = (x, y, z) => g.localToWorld(V3(x, y, z)), T = o.type, bob = Math.sin(now * 5) * 0.05;
+    r.rotation.set(0, g.rotation.y, 0); r.scale.setScalar(0.4); g.updateMatrixWorld();
+    const rg = f.rig;
+    if (T === 'plinko') {
+        r.children.forEach((c) => { c.visible = c === rg.headGroup; }); r.scale.setScalar(0.85);
+        const by = 3.35 - ((t * 0.8) % 1) * 1.05, p = W(Math.sin(t * 8) * 0.75, by, 0.0); r.position.set(p.x, p.y - 1.56 * 0.85, p.z); r.rotation.z = t * 6; return;
+    }
     let p;
-    let scale = 0.31;
-    let tilt = 0;
-    if (type === 'crash') {
-        // Мини-игрок стоит на кончике ракеты и поднимается вместе с ней.
-        const rocketLift = Number(o.machine3D && o.machine3D.rocketModel && o.machine3D.rocketModel.position.y) || 0;
-        scale = 0.34;
-        p = W(0, 1.98 + rocketLift + bob, 0.08);
-        tilt = -0.16;
-        rig.legL.rotation.x = rig.legR.rotation.x = -1.15;
-        rig.armL.rotation.set(-2.45, 0, 0.48 + Math.sin(now * 8) * 0.12);
-        rig.armR.rotation.set(-2.45, 0, -0.48 - Math.sin(now * 8) * 0.12);
-    } else if (type === 'blackjack') {
-        // Посадка прямо на центральную область карт игрока на экране автомата.
-        scale = 0.205;
-        p = W(0.03, 1.23 + bob * 0.3, 0.73);
-        rig.armL.rotation.set(-0.35, 0, 0.55);
-        rig.armR.rotation.set(-0.35, 0, -0.55);
-    } else if (type === 'hilo') {
-        // Центральная карта Hi-Lo.
-        scale = 0.22;
-        p = W(0, 1.42 + bob * 0.35, 0.73);
-        rig.armL.rotation.set(-0.55, 0, 0.65);
-        rig.armR.rotation.set(-0.55, 0, -0.65);
-    } else if (type === 'roulette') {
-        scale = 0.25;
-        p = W(0, 1.72 + bob, 0.18);
-        tilt = Math.sin(now * 3) * 0.12;
-    } else if (type === 'wheel') {
-        scale = 0.25;
-        p = W(0, 1.9 + bob, 0.68);
-        tilt = Math.sin(now * 4) * 0.1;
-    } else if (type === 'slots') {
-        scale = 0.28;
-        p = W(0, 1.75 + bob, 0.72);
-    } else if (type === 'dice' || type === 'coin' || type === 'mines' || type === 'dragon') {
-        scale = 0.27;
-        p = W(0, 1.78 + bob, 0.72);
-        tilt = Math.sin(now * 3.5) * 0.08;
-    } else if (type === 'ducks') {
-        scale = 0.29;
-        p = W(0, 1.9 + bob, 0.68);
-        tilt = Math.sin(now * 4.5) * 0.1;
-    } else {
-        scale = 0.28;
-        p = W(0, 1.76 + bob, 0.72);
-    }
-    place(p, scale, tilt);
-    if (type !== 'crash') {
-        rig.armL.rotation.x += Math.sin(now * 7) * 0.08;
-        rig.armR.rotation.x -= Math.sin(now * 7) * 0.08;
-    }
+    if (T === 'crash') { p = W(0, 3.35 + bob, 0.05); r.rotation.z = -0.25; rg.legL.rotation.x = rg.legR.rotation.x = -1.25; rg.armL.rotation.set(-2.6, 0, 0.5); rg.armR.rotation.set(-2.6, 0, -0.5); }
+    else if (T === 'hilo' || T === 'blackjack') { p = W(0, 3.1 + bob * 0.5, 0.06); r.rotation.x = -Math.PI / 2; rg.armL.rotation.set(0, 0, 1.1); rg.armR.rotation.set(0, 0, -1.1); }
+    else { p = W(0, 2.9 + Math.abs(bob), 0); r.rotation.y += now * 1.5; rg.armL.rotation.set(-2.8, 0, 0.4 + Math.sin(now * 9) * 0.3); rg.armR.rotation.set(-2.8, 0, -0.4 - Math.sin(now * 9) * 0.3); }
+    r.position.set(p.x, p.y, p.z);
 }
-
 function realTick(dt, t) {
     const g = G(), input = window.input;
-    if (!g || g.state !== 'PLAYING') return;
-
-    // Событие может прийти раньше, чем клиент построит нужный этаж/автомат.
-    // Держим его короткое время и запускаем, как только соответствующий автомат появится.
-    const nowMs = Date.now();
-    const stillPending = [];
-    for (const queued of real.pendingBets) {
-        if (queued.expires <= nowMs) continue;
-        const packetFloor = Number(queued.packet.floor || g.currentFloor);
-        const hasMachine = packetFloor === Number(g.currentFloor) &&
-            g.sceneObjects.some((x) => x && x.id === queued.packet.machineId && x.group);
-        if (hasMachine) startBetReal(queued.packet, false);
-        else stillPending.push(queued);
-    }
-    real.pendingBets = stillPending;
-
+    for (const uid of Object.keys(real.carryInfo)) if (t - (real.carryInfo[uid].t || 0) > 3 && real.carryInfo[uid].t) endCarryVisual(uid);
     if (real.holding) {
-        if (!avatars()[real.holding]) {
-            clearCarryAvatar(real.holding); real.holding = null; setCarryHandsVisible(false);
-        } else {
-            real.carryT -= dt;
-            if (real.carryT <= 0) {
-                real.carryT = 0.08;
-                const pose = currentCarryPose();
-                applyCarryPoseToAvatar(real.holding, pose);
-                sendPkt({ type: 'fr_carry', targetUid: real.holding, ...pose });
-            }
-        }
+        if (!avatars()[real.holding]) real.holding = null;
+        else {
+            { const d0 = fwd(input.yaw); startCarryVisual(real.holding); setPins(real.holding, g.player.x + d0.x, g.player.z + d0.z, input.yaw); } real.carryT -= dt; if (real.carryT <= 0) { real.carryT = 0.08; const d = fwd(input.yaw), rx = Math.cos(input.yaw), rz = -Math.sin(input.yaw); sendPkt({ type: 'fr_carry', targetUid: real.holding, x: +(g.player.x + d.x * 1.1 + rx * 0.5).toFixed(2), z: +(g.player.z + d.z * 1.1 + rz * 0.5).toFixed(2), yaw: input.yaw }); } }
     }
+    const pm = real.proxies[myId()]; if (pm && pm.state === 'taken') lockMe(true);
     if (real.carried) {
-        const c = real.carried;
-        if (Date.now() - (c.receivedAt || 0) > 900) {
-            real.carried = null;
-            window.friendCarryPose = null;
-            toast('Связь с тем, кто тебя держал, потеряна — ты отпущен', 'amber');
-        } else {
-            window.friendCarryPose = { ...c, until: Date.now() + 650 };
-        }
+        lockMe(true); const c = real.carried;
+        g.player.x += (c.x - g.player.x) * Math.min(1, dt * 10); g.player.z += (c.z - g.player.z) * Math.min(1, dt * 10);
     }
-
+    if (real.carried) { real.carriedGone = (avatars()[real.carried.holder] ? 0 : (real.carriedGone || 0) + dt); if (real.carriedGone > 4) { real.carried = null; real.carriedGone = 0; lockMe(false); toast('Тот, кто нёс тебя, отключился', 'amber'); } }
+    if (real.watch && t - real.watch.t > 15) { hideAvatar(real.watch.uid, false); real.watch = null; banner(null); toast('Друг пропал во время побега — игра продолжается', 'amber'); }
     for (const f of real.bets.slice()) {
-        const o = f.machine;
-        if (!o || f.floor !== Number(g.currentFloor) || !g.sceneObjects.includes(o)) {
-            hideAvatar(f.uid, false);
-            f.rig.root.visible = false;
-            if (f.me) lockMe(false);
-            real.bets = real.bets.filter((b) => b !== f);
-            continue;
-        }
+        const absent = f.me ? !(g.remotePlayers || {})[f.holderUid] : !(g.remotePlayers || {})[f.uid];
+        if (absent) { cancelBet(f, f.me ? 'Игрок, который тебя поставил, отключился — ставка отменена' : 'Друг отключился — ставка отменена'); continue; }
         if (t < f.t0) continue;
+        const o = f.machine;
         if (!f.shown) {
-            f.shown = true;
-            hideAvatar(f.uid, true);
-            f.rig.root.visible = true;
-            sound.click();
-            if (f.me) {
-                real.carried = null;
-                lockMe(true);
-                const yawToMachine = Math.atan2(-(o.x - g.player.x), -(o.z - g.player.z));
-                const d = fwd(yawToMachine);
-                g.player.x = o.x - d.x * 2.4;
-                g.player.z = o.z - d.z * 2.4;
-                input.yaw = Math.atan2(-(o.x - g.player.x), -(o.z - g.player.z));
-                input.pitch = 0.42;
-            }
+            f.shown = true; hideAvatar(f.uid, true); f.rig.root.visible = true; sound.click();
+            if (f.me) { real.carried = null; lockMe(true); const d = fwd(Math.atan2(-(o.x - g.player.x), -(o.z - g.player.z))); g.player.x = o.x - d.x * 2.4; g.player.z = o.z - d.z * 2.4; input.yaw = Math.atan2(-(o.x - g.player.x), -(o.z - g.player.z)); input.pitch = 0.5; }
         }
         if (f.me) lockMe(true);
         ridePose(f, o, t - f.t0, t);
-        if (!f.resolved && t - f.t0 > f.dur) {
-            f.resolved = true;
-            real.bets = real.bets.filter((b) => b !== f);
-            restoreRig(f);
-            if (ejectHash(f.eid) < 45) {
-                resolveWinReal(f);
-            } else {
-                f.state = 'taken';
-                const d = V3(g.player.x - o.x, 0, g.player.z - o.z).normalize();
-                f.rig.root.position.set(o.x + d.x * 1.6, 0, o.z + d.z * 1.6);
-                startTcc(f);
-            }
-        }
+        if (!f.resolved && f.holderUid === myId() && t > f.t0 + 90) { sendPkt({ type: 'fr_result', targetUid: f.uid, win: true }); onResult(f, true); }
     }
 }
 function resolveWinReal(f) {
     const g = G(), o = f.machine; f.state = 'idle'; f.rig.root.visible = false; hideAvatar(f.uid, false);
     if (f.me) lockMe(false);
+    toast(`✅ ${f.name} спасён — раунд выигран!`, 'green'); sound.bigWin();
     if (f.holderUid === myId()) {
-        const prize = Math.round((600 + Math.random() * 900) * (g.night || 1)); g.changeBalance(prize); sound.bigWin();
         const d = V3(g.player.x - o.x, 0, g.player.z - o.z).normalize();
         const data = { eventId: `${Date.now()}_frw_${Math.random().toString(36).slice(2, 6)}`, targetUid: f.uid, floor: g.currentFloor, startX: +(o.x + d.x * 1.4).toFixed(2), startY: 1.2, startZ: +(o.z + d.z * 1.4).toFixed(2), endX: +(o.x + d.x * 4.2).toFixed(2), endY: 0.5, endZ: +(o.z + d.z * 4.2).toFixed(2), vx: +(d.x * 8).toFixed(2), vz: +(d.z * 8).toFixed(2), vy: 5, duration: 1.5, fallSummary: 'friend win' };
         sendPkt({ type: 'playerRagdoll', ...data }); g.startRemoteAvatarRagdoll(f.uid, data);
-        toast(`✅ ${f.name} выиграл! +$${prize.toLocaleString()}`, 'green');
-    } else toast(`✅ ${f.name} выиграл ставку!`, 'green');
+    }
 }
 function failAll(why) {
     const g = G(); g.changeBalance(-g.balance); g.triggerGameOver(why);
@@ -5004,39 +4756,225 @@ function failAll(why) {
 }
 window.frNet = function (m) {
     const g = G(), me = myId(), tgt = String(m.targetUid || '');
-    if (m.type === 'fr_grab' && tgt === me) {
-        const p = m.pose || { x: g.player.x, y: 0.92, z: g.player.z, yaw: 0 };
-        real.carried = { holder: String(m.uid), x: Number(p.x) || g.player.x, y: Number(p.y) || 0.92, z: Number(p.z) || g.player.z, yaw: Number(p.yaw) || 0, receivedAt: Date.now() };
-        window.friendCarryPose = { ...real.carried, until: Date.now() + 650 };
-        toast(`🤲 ${nameOf(m.uid)} поднял тебя на руки!`);
-    }
-    else if (m.type === 'fr_carry') {
-        const pose = { x: Number(m.x) || 0, y: Number(m.y) || 0.92, z: Number(m.z) || 0, yaw: Number(m.yaw) || 0 };
-        if (tgt === me && real.carried) {
-            real.carried = { ...real.carried, ...pose, receivedAt: Date.now() };
-            window.friendCarryPose = { ...real.carried, until: Date.now() + 650 };
-        } else if (tgt !== me) applyCarryPoseToAvatar(tgt, pose);
-    }
-    else if ((m.type === 'fr_drop' || m.type === 'fr_throw') && tgt === me) {
-        real.carried = null; window.friendCarryPose = null;
-        g.player.jumpHeight = 0; g.player.vy = 0;
-        if (m.type === 'fr_drop' && Number.isFinite(Number(m.x)) && Number.isFinite(Number(m.z))) { g.player.x = m.x; g.player.z = m.z; }
-        lockMe(false);
-        toast(m.type === 'fr_drop' ? 'Тебя поставили на пол' : 'Тебя бросили!');
-    }
-    else if ((m.type === 'fr_drop' || m.type === 'fr_throw') && tgt !== me) clearCarryAvatar(tgt);
-    else if (m.type === 'fr_bet') startBetReal(m, true);
+    if (m.type === 'fr_grab' && tgt !== me) { real.carryInfo[tgt] = { t: performance.now() / 1000 }; startCarryVisual(tgt); }
+    if (m.type === 'fr_carry' && tgt !== me) { real.carryInfo[tgt] = { t: performance.now() / 1000, x: m.x, z: m.z }; startCarryVisual(tgt); setPins(tgt, m.x - Math.cos(m.yaw) * 0.5, m.z + Math.sin(m.yaw) * 0.5, m.yaw); }
+    if (m.type === 'fr_drop' && tgt !== me) endCarryVisual(tgt);
+    if (m.type === 'fr_grab' && tgt === me) { real.carried = { holder: String(m.uid), x: g.player.x, z: g.player.z }; toast(`🤲 ${nameOf(m.uid)} взял тебя на руки!`); }
+    else if (m.type === 'fr_carry' && tgt === me && real.carried) { real.carried.x = m.x; real.carried.z = m.z; }
+    else if (m.type === 'fr_drop' && tgt === me && real.carried) { real.carried = null; g.player.x = m.x; g.player.z = m.z; lockMe(false); toast('Тебя поставили на пол'); }
+    else if (m.type === 'fr_bet') startBetReal(m);
+    else if (m.type === 'fr_result') { const f = real.proxies[tgt]; if (f) onResult(f, !!m.win); }
+    else if (m.type === 'fr_prog' && tgt !== me) { real.watch = { uid: tgt, t: performance.now() / 1000 }; banner(`🏃 ${nameOf(tgt)} бежит от ТЦК! До выхода: ${m.left} м · ТЦК позади: ${m.gap} м`); }
     else if (m.type === 'fr_escape') {
-        const f = real.proxies[tgt]; hideAvatar(tgt, !m.ok);
+        real.watch = null; banner(null);
+        const f = real.proxies[tgt]; if (f) f.state = 'idle'; hideAvatar(tgt, !m.ok);
         if (m.ok) { toast(`🏁 ${nameOf(tgt)} сбежал от ТЦК и вернулся!`, 'green'); if (f) f.rig.root.visible = false; }
         else if (tgt !== me) failAll('Друга не вытащили из фургона ТЦК. Деньги конфискованы. Вы проиграли.');
     }
 };
 
+function abortAll() {
+    const g = G();
+    if (tcc) { g.scene.remove(tcc.van); tcc.guys.forEach((gy) => g.scene.remove(gy.rig.root)); tcc = null; }
+    if (esc) { const e = esc; esc = null; g.scene.remove(e.grp); g.scene.remove(e.lamp); e.hud.remove(); if (g.state === 'ESCAPE') g.state = 'PLAYING'; }
+    real.bets = []; real.carried = null; real.holding = null; real.watch = null;
+    Object.keys(real.carryInfo).forEach(endCarryVisual); fade(0);
+    Object.values(real.proxies).forEach((f) => { dropProp(f); restoreRig(f); f.rig.headGroup.visible = true; f.rig.root.visible = false; f.state = 'idle'; hideAvatar(f.uid, false); });
+    banner(null);
+    const k = g.playerKnockback; k.lie = 0; k.getUp = 0; k.down = 0;
+}
+(function hookGame() {
+    const g = G(); if (!g) return;
+    ['startNewGame', 'triggerGameOver'].forEach((nm) => { const o = g[nm]; if (typeof o === 'function') g[nm] = function (...a) { try { abortAll(); } catch (_) {} return o.apply(this, a); }; });
+    const bf = g.buildFloor3D; if (typeof bf === 'function') g.buildFloor3D = function (n) { real.bets.slice().forEach((f) => cancelBet(f, 'Этаж сменился — ставка отменена')); return bf.call(this, n); };
+    const rg = g.applyRemotePlayerRagdoll; if (typeof rg === 'function') g.applyRemotePlayerRagdoll = function (pk) {
+        if (real.carried && String(pk && pk.targetUid) === myId()) { real.carried = null; real.carriedGone = 0; const k = g.playerKnockback; k.lie = 0; k.getUp = 0; k.down = 0; }
+        return rg.call(this, pk);
+    };
+})();
+
 window.friendTick = function (dt) {
-    const t = performance.now() / 1000;
+    const g = G(), t = performance.now() / 1000;
     realTick(dt, t);
     if (tcc) tccStep(dt, t);
+};
+})();
+</script>
+
+<script>
+// ===== НАСТОЯЩИЙ РЕГДОЛЛ: Verlet-скелет (точки + стержни + столкновения), а не заготовленная анимация =====
+(function () {
+'use strict';
+const REST = { P: [0, 0.425, 0], C: [0, 1.275, 0], H: [0, 1.56, 0], SL: [-0.34, 1.2, 0.04], SR: [0.34, 1.2, 0.04], HL: [-0.14, 0.5, 0], HR: [0.14, 0.5, 0], DL: [-0.34, 0.66, 0.1], DR: [0.34, 0.66, 0.1], FL: [-0.14, 0.03, 0], FR: [0.14, 0.03, 0] };
+const RAD = { P: 0.2, C: 0.2, H: 0.25, SL: 0.08, SR: 0.08, HL: 0.12, HR: 0.12, DL: 0.1, DR: 0.1, FL: 0.1, FR: 0.1 };
+const LINKS = [['P','C'],['C','H'],['C','SL'],['C','SR'],['SL','SR'],['P','SL'],['P','SR'],['P','HL'],['P','HR'],['HL','HR'],['C','HL'],['C','HR'],['SL','DL'],['SR','DR'],['HL','FL'],['HR','FR'],['P','H']];
+const NAMES = Object.keys(REST);
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+
+class VerletRagdoll {
+    constructor(rig, root, o = {}) {
+        this.rig = rig; this.root = root; this.t = 0; this.acc = 0; this.calm = 0; this.anchor = null; this.k = 0; this.blending = false;
+        root.rotation.x = 0; root.rotation.z = 0; root.updateMatrixWorld(true);
+        this.p = {}; this.q = {}; this.safe = {};
+        const loc = {};
+        NAMES.forEach((n) => { loc[n] = V(...REST[n]); this.p[n] = root.localToWorld(loc[n].clone()); this.q[n] = this.p[n].clone(); this.safe[n] = this.p[n].clone(); });
+        this.links = LINKS.map(([a, b]) => [a, b, loc[a].distanceTo(loc[b])]);
+        // начальный импульс + кручение вокруг центра масс (кувырок)
+        const h = 1 / 60, vel = o.calm ? V(0, 0, 0) : V(o.vx || 0, o.vy == null ? 4 : o.vy, o.vz || 0);
+        const com = V(0, 0, 0); NAMES.forEach((n) => com.add(this.p[n])); com.multiplyScalar(1 / NAMES.length);
+        let axis = V(-vel.z, 0, vel.x); if (axis.lengthSq() < 1e-4) axis = V(1, 0, 0); axis.normalize();
+        const omega = o.calm ? 0 : Math.min(9, 3.5 + Math.abs(o.spin || 5) * 0.35);
+        NAMES.forEach((n) => { const r = this.p[n].clone().sub(com), v = vel.clone().add(axis.clone().cross(r).multiplyScalar(omega)); this.q[n] = this.p[n].clone().addScaledVector(v, -h); });
+        // «тело» (торс + пояс + пуговицы) — одна группа, остальное двигаем отдельно
+        const parts = [rig.headGroup, rig.armL, rig.armR, rig.legL, rig.legR];
+        this.body = new THREE.Group();
+        root.children.filter((c) => c.isMesh && !parts.includes(c)).forEach((c) => this.body.add(c));
+        root.add(this.body);
+        const E = (x, y, z) => new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z));
+        this.rest = {
+            body: { pos: V(0, 0, 0), quat: new THREE.Quaternion() }, head: { pos: V(0, 1.56, 0), quat: new THREE.Quaternion() },
+            armL: { pos: V(-0.38, 0.95, 0.08), quat: E(-0.35, 0, 0.45) }, armR: { pos: V(0.38, 0.95, 0.08), quat: E(-0.35, 0, -0.45) },
+            legL: { pos: V(-0.14, 0.25, 0), quat: new THREE.Quaternion() }, legR: { pos: V(0.14, 0.25, 0), quat: new THREE.Quaternion() }
+        };
+        this.node = { body: this.body, head: rig.headGroup, armL: rig.armL, armR: rig.armR, legL: rig.legL, legR: rig.legR };
+        rig.ragdolling = true;
+    }
+    substep() {
+        const h = 1 / 60, g = -18 * h * h, damp = 0.996, G = window.game;
+        for (const n of NAMES) { const p = this.p[n], q = this.q[n], vx = (p.x - q.x) * damp, vy = (p.y - q.y) * damp, vz = (p.z - q.z) * damp; q.copy(p); p.x += vx; p.y += vy + g; p.z += vz; }
+        if (this.anchor) {
+            const cx = (this.p.P.x + this.p.C.x) / 2, cz = (this.p.P.z + this.p.C.z) / 2, dx = (this.anchor.x - cx) * this.anchor.k * h, dz = (this.anchor.z - cz) * this.anchor.k * h;
+            for (const n of NAMES) { this.p[n].x += dx; this.p[n].z += dz; }
+        }
+        for (let it = 0; it < 7; it++) {
+            for (const [a, b, len] of this.links) {
+                const pa = this.p[a], pb = this.p[b], dx = pb.x - pa.x, dy = pb.y - pa.y, dz = pb.z - pa.z, d = Math.hypot(dx, dy, dz) || 1e-6, f = (d - len) / d * 0.5;
+                pa.x += dx * f; pa.y += dy * f; pa.z += dz * f; pb.x -= dx * f; pb.y -= dy * f; pb.z -= dz * f;
+            }
+            for (const n of NAMES) {
+                const p = this.p[n], q = this.q[n], r = RAD[n];
+                if (p.y < r) { const vy = p.y - q.y; p.y = r; q.y = r + vy * 0.3; q.x = p.x - (p.x - q.x) * 0.82; q.z = p.z - (p.z - q.z) * 0.82; }
+                if (Math.abs(p.x) > 10.3) { p.x = Math.sign(p.x) * 10.3; q.x = p.x; }
+                if (Math.abs(p.z) > 8.3) { p.z = Math.sign(p.z) * 8.3; q.z = p.z; }
+            }
+            if (this.pins) for (const n in this.pins) { this.p[n].copy(this.pins[n]); this.q[n].copy(this.pins[n]); }
+        }
+        for (const n of ['P', 'C']) {
+            const p = this.p[n], s = this.safe[n];
+            if (G && G.checkCollision3D && G.checkCollision3D(p.x, p.z)) { p.x = s.x; p.z = s.z; this.q[n].x = p.x; this.q[n].z = p.z; } else { s.x = p.x; s.z = p.z; }
+        }
+        let mx = 0; for (const n of NAMES) mx = Math.max(mx, this.p[n].distanceTo(this.q[n]));
+        this.calm = mx < 0.006 ? this.calm + h : 0;
+    }
+    step(dt) { this.acc = Math.min(0.1, this.acc + dt); this.t += dt; while (this.acc >= 1 / 60) { this.substep(); this.acc -= 1 / 60; } }
+    basis(right, up) {
+        const y = up.clone().normalize(), x = right.clone().sub(y.clone().multiplyScalar(right.dot(y)));
+        if (x.lengthSq() < 1e-6) x.set(1, 0, 0); x.normalize();
+        const z = x.clone().cross(y), m = new THREE.Matrix4().makeBasis(x, y, z);
+        return new THREE.Quaternion().setFromRotationMatrix(m);
+    }
+    apply() {
+        const root = this.root; root.updateMatrixWorld(true);
+        const inv = new THREE.Matrix4().copy(root.matrixWorld).invert(), L = {};
+        NAMES.forEach((n) => { L[n] = this.p[n].clone().applyMatrix4(inv); });
+        const right = L.SR.clone().sub(L.SL);
+        const qb = this.basis(right, L.C.clone().sub(L.P));
+        this.node.body.quaternion.copy(qb); this.node.body.position.copy(L.P.clone().sub(V(...REST.P).applyQuaternion(qb)));
+        this.node.head.position.copy(L.H); this.node.head.quaternion.copy(this.basis(right, L.H.clone().sub(L.C)));
+        const limb = (node, a, b, useRight) => { node.position.copy(a.clone().add(b).multiplyScalar(0.5)); node.quaternion.copy(this.basis(useRight || right, a.clone().sub(b))); };
+        limb(this.node.armL, L.SL, L.DL); limb(this.node.armR, L.SR, L.DR);
+        limb(this.node.legL, L.HL, L.FL); limb(this.node.legR, L.HR, L.FR);
+    }
+    beginBlend() {
+        this.blending = true; this.k = 0; this.from = {};
+        for (const key of Object.keys(this.node)) this.from[key] = { pos: this.node[key].position.clone(), quat: this.node[key].quaternion.clone() };
+    }
+    blend(dt) {
+        this.k = Math.min(1, this.k + dt / 0.6); const e = this.k * this.k * (3 - 2 * this.k);
+        for (const key of Object.keys(this.node)) { const n = this.node[key]; n.position.lerpVectors(this.from[key].pos, this.rest[key].pos, e); n.quaternion.copy(this.from[key].quat).slerp(this.rest[key].quat, e); }
+        if (this.k >= 1) { this.finish(); return true; }
+        return false;
+    }
+    finish() {
+        const root = this.root;
+        for (const key of Object.keys(this.node)) { this.node[key].position.copy(this.rest[key].pos); this.node[key].quaternion.copy(this.rest[key].quat); }
+        this.body.children.slice().forEach((c) => root.add(c)); root.remove(this.body);
+        this.rig.ragdolling = false; root.rotation.x = 0; root.rotation.z = 0;
+    }
+}
+['step', 'apply', 'blend'].forEach((m) => {
+    const o = VerletRagdoll.prototype[m];
+    VerletRagdoll.prototype[m] = function (...a) {
+        if (this.dead) return m === 'blend' ? true : undefined;
+        try { return o.apply(this, a); } catch (e) { console.warn('ragdoll disabled:', e); this.dead = true; try { this.finish(); } catch (_) {} return m === 'blend' ? true : undefined; }
+    };
+});
+window.makeRagdoll = (rig, root, o) => { try { return new VerletRagdoll(rig, root, o); } catch (e) { console.warn('ragdoll init failed:', e); return null; } };
+window.VerletRagdoll = VerletRagdoll;
+})();
+</script>
+
+<script>
+// ===== КАСТОМИЗАЦИЯ ПЕРСОНАЖА =====
+(function () {
+'use strict';
+const SHIRT = [0x0284c7, 0xef4444, 0x22c55e, 0xf59e0b, 0xa78bfa, 0xec4899, 0x14b8a6, 0x64748b, 0x111827, 0xf8fafc];
+const SKIN = [0xa3b18a, 0xf2c9a0, 0xd9a066, 0x8d5524, 0x6b4423, 0x9ad0e6];
+const HAT = [0xfacc15, 0xf97316, 0xef4444, 0x38bdf8, 0xa3e635, 0xe879f9, 0xf8fafc, 0x111827, 0x7c3aed, 0x14b8a6];
+const ACC = ['Нет', 'Цилиндр', 'Очки', 'Усы'];
+const hex = (n) => '#' + Number(n).toString(16).padStart(6, '0');
+let look = { shirt: SHIRT[0], skin: SKIN[0], hat: HAT[0], acc: 0 };
+try { const s = JSON.parse(localStorage.getItem('casinoLook') || 'null'); if (s) look = Object.assign(look, s); } catch (_) {}
+window.myLook = look;
+
+window.drawFace = function (ctx, cx, cy, r, L) {
+    L = L || look; ctx.save(); ctx.translate(cx, cy); ctx.scale(r / 100, r / 100);
+    ctx.fillStyle = hex(L.skin); ctx.beginPath(); ctx.roundRect(-70, -65, 140, 130, 40); ctx.fill();
+    if (L.acc === 1) { ctx.fillStyle = '#18181b'; ctx.fillRect(-48, -135, 96, 75); ctx.fillStyle = '#dc2626'; ctx.fillRect(-48, -85, 96, 14); ctx.fillStyle = '#18181b'; ctx.fillRect(-85, -65, 170, 14); }
+    else { ctx.fillStyle = hex(L.hat); ctx.beginPath(); ctx.roundRect(-62, -98, 124, 46, 14); ctx.fill(); ctx.fillRect(-72, -62, 144, 14); }
+    [-30, 30].forEach((x) => {
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(x, -8, 22, 27, 0, 0, 7); ctx.fill();
+        ctx.fillStyle = '#18181b'; ctx.beginPath(); ctx.ellipse(x + (x < 0 ? 4 : -4), -6, 11, 15, 0, 0, 7); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x + (x < 0 ? 8 : -1), -13, 4, 0, 7); ctx.fill();
+    });
+    ctx.strokeStyle = '#27272a'; ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(-52, -42); ctx.lineTo(-14, -34); ctx.moveTo(52, -42); ctx.lineTo(14, -34); ctx.stroke();
+    ctx.fillStyle = 'rgba(249,168,212,.6)'; [-48, 48].forEach((x) => { ctx.beginPath(); ctx.arc(x, 26, 10, 0, 7); ctx.fill(); });
+    ctx.strokeStyle = '#3f1d1d'; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(0, 24, 20, 0.2, Math.PI - 0.2); ctx.stroke();
+    if (L.acc === 2) { ctx.strokeStyle = '#d6ad55'; ctx.lineWidth = 5; [-30, 30].forEach((x) => { ctx.beginPath(); ctx.arc(x, -8, 28, 0, 7); ctx.stroke(); }); }
+    if (L.acc === 3) { ctx.fillStyle = '#18181b'; ctx.beginPath(); ctx.roundRect(-34, 10, 68, 12, 6); ctx.fill(); }
+    ctx.restore();
+};
+
+const btn = document.createElement('button'); btn.textContent = '👕 Внешний вид';
+btn.style.cssText = 'position:fixed;left:10px;bottom:46px;z-index:95;font:800 13px Inter,sans-serif;background:#1f2937;color:#fff;border:2px solid #4b5563;border-radius:12px;padding:7px 12px;cursor:pointer';
+document.body.appendChild(btn);
+const modal = document.createElement('div');
+modal.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;font-family:Inter,sans-serif;color:#fff';
+modal.innerHTML = '<div style="background:#18181b;border:2px solid #52525b;border-radius:18px;padding:18px 22px;width:min(440px,94vw);max-height:92vh;overflow:auto"><div style="font-weight:900;font-size:18px;margin-bottom:10px">👕 Внешний вид персонажа</div><div style="display:flex;gap:14px;align-items:center"><canvas id="lkPrev" width="150" height="150" style="background:#27272a;border-radius:14px"></canvas><div style="font-size:12px;color:#a1a1aa">Это увидят другие игроки. Выбор сохраняется на этом устройстве.</div></div><div id="lkRows"></div><div style="display:flex;gap:10px;margin-top:14px"><button id="lkSave" style="flex:1;padding:10px;border-radius:12px;background:#16a34a;font-weight:800;border:0;color:#fff;cursor:pointer">Сохранить</button><button id="lkClose" style="padding:10px 16px;border-radius:12px;background:#3f3f46;font-weight:800;border:0;color:#fff;cursor:pointer">Отмена</button></div></div>';
+document.body.appendChild(modal);
+let draft = null;
+function prev() { const c = modal.querySelector('#lkPrev'), x = c.getContext('2d'); x.clearRect(0, 0, 150, 150); x.fillStyle = hex(draft.shirt); x.beginPath(); x.roundRect(30, 112, 90, 50, 14); x.fill(); window.drawFace(x, 75, 72, 60, draft); }
+function rows() {
+    const host = modal.querySelector('#lkRows'); host.innerHTML = '';
+    const row = (title, list, key, isColor) => {
+        const d = document.createElement('div'); d.style.cssText = 'margin-top:12px'; d.innerHTML = `<div style="font-size:12px;font-weight:800;color:#a1a1aa;margin-bottom:5px">${title}</div>`;
+        const w = document.createElement('div'); w.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
+        list.forEach((v, i) => {
+            const b = document.createElement('button'), val = isColor ? v : i, on = draft[key] === val;
+            b.style.cssText = `border-radius:10px;border:3px solid ${on ? '#fde047' : '#3f3f46'};cursor:pointer;` + (isColor ? `width:34px;height:34px;background:${hex(v)}` : 'padding:6px 10px;background:#27272a;color:#fff;font-weight:700;font-size:12px');
+            if (!isColor) b.textContent = v;
+            b.onclick = () => { draft[key] = val; rows(); prev(); }; w.appendChild(b);
+        });
+        d.appendChild(w); host.appendChild(d);
+    };
+    row('Майка', SHIRT, 'shirt', true); row('Кожа', SKIN, 'skin', true); row('Шляпа / кепка', HAT, 'hat', true); row('Аксессуар', ACC, 'acc', false);
+}
+btn.onclick = () => { try { document.exitPointerLock && document.exitPointerLock(); } catch (_) {} draft = Object.assign({}, window.myLook); rows(); prev(); modal.style.display = 'flex'; };
+modal.querySelector('#lkClose').onclick = () => { modal.style.display = 'none'; };
+modal.querySelector('#lkSave').onclick = () => {
+    window.myLook = look = Object.assign({}, draft);
+    try { localStorage.setItem('casinoLook', JSON.stringify(look)); } catch (_) {}
+    modal.style.display = 'none'; if (window.game && window.game.showToast) window.game.showToast('👕 Внешний вид сохранён — друзья увидят его через пару секунд', 'green');
 };
 })();
 </script>
