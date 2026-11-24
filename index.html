@@ -239,7 +239,17 @@ import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.g
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-casino-3d';
 let db = null;
 let auth = null;
-let myUid = 'player_' + Math.random().toString(36).slice(2, 10);
+let authUid = null;
+// A multiplayer identity belongs to this page instance, not to the Firebase
+// anonymous account. Firebase Auth is shared by tabs, which made two windows
+// look like the same player and caused the server to reject self-target actions.
+function makePageSessionUid() {
+    const randomPart = (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID().replace(/-/g, '').slice(0, 16)
+        : Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 8);
+    return `tab_${Date.now().toString(36)}_${randomPart}`;
+}
+let myUid = makePageSessionUid();
 window.myUid = myUid;
 
 async function initMultiplayer() {
@@ -255,8 +265,10 @@ async function initMultiplayer() {
                 await signInAnonymously(auth);
             }
             if (auth.currentUser) {
-                myUid = auth.currentUser.uid;
-                window.myUid = myUid;
+                // Keep the Firebase identity for auth only. Multiplayer must use
+                // a unique page/session id so separate tabs can interact.
+                authUid = auth.currentUser.uid;
+                window.authUid = authUid;
             }
         }
     } catch (e) {
@@ -276,9 +288,6 @@ window.mpSync = {
     connections: [],
     socket: null,
     socketUrl: '',
-    networkUid: null,
-    serverJoined: false,
-    pendingSocketPackets: [],
     isHostAuthority: true,
     hostTickInterval: null,
     peerRetryTimer: null,
@@ -297,7 +306,7 @@ window.mpSync = {
 
     markAndCheckDuplicate(msg) {
         if (!msg) return false;
-        const pktId = msg.eventId || msg.packetId || null;
+        const pktId = msg.eventId || msg.packetId || (msg.type === 'chat' ? `chat_${msg.uid}_${msg.sender}_${msg.text}` : null);
         if (!pktId) return false;
         const now = Date.now();
         for (const [k, ts] of this.seenPackets.entries()) {
@@ -317,9 +326,6 @@ window.mpSync = {
 
     joinRoom(roomCode) {
         this.roomCode = (roomCode || 'CASINO777').toUpperCase().trim().replace(/[^A-Z0-9]/g, '');
-        this.networkUid = String(window.myUid || myUid);
-        this.serverJoined = false;
-        this.pendingSocketPackets = [];
         this.localPeers = {};
         this.isHostAuthority = true;
         this.localEconomy = {
@@ -355,8 +361,7 @@ window.mpSync = {
         this.initPeerJS();
         this.connectFirestore(this.roomCode);
         this.startLocalAuthorityLoop();
-        if (this.socketUrl) this.sendServerPacket({ type: 'requestLocalEconomy' });
-        else this.sendWorldPacket({ type: 'requestLocalEconomy' });
+        this.sendWorldPacket({ type: 'requestLocalEconomy' });
     },
 
     hasAuthoritativeServer() {
@@ -386,21 +391,16 @@ window.mpSync = {
     },
 
     sendLocalOnly(packet) {
-        const activeUid = this.networkUid || window.myUid || myUid;
+        const activeUid = window.myUid || myUid;
         const msg = { ...packet, uid: activeUid, room: this.roomCode };
-        if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
-            this.sendServerPacket(packet);
+        // An open WSS is the room's single transport. Do not also publish the
+        // same economy event through BroadcastChannel/PeerJS in other tabs.
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            try { this.socket.send(JSON.stringify(msg)); } catch (_) {}
             return;
         }
         if (this.bc) { try { this.bc.postMessage(msg); } catch (_) {} }
         this.connections.forEach(c => { if (c && c.open) { try { c.send(msg); } catch (_) {} } });
-    },
-
-    sendNightComplete(g) {
-        const eventId = `night_complete_${this.roomCode}_${g.night}`;
-        const packet = { type: 'nightComplete', eventId };
-        if (this.hasAuthoritativeServer() || (this.socket && this.socket.readyState === WebSocket.CONNECTING)) this.sendServerPacket(packet);
-        else this.sendLocalOnly(packet);
     },
 
     sendNightAdvance(g) {
@@ -408,22 +408,14 @@ window.mpSync = {
             night: g.night, unlockedFloors: g.unlockedFloors, balance: g.balance, target: g.target,
             nightDuration: g.nightDuration, timeLeft: g.timeLeft, updatedAt: Date.now()
         };
-        const packet = { type: 'nightAdvance', eventId: `night_${this.roomCode}_${g.night}`, economy: { ...this.localEconomy } };
-        if (this.hasAuthoritativeServer() || (this.socket && this.socket.readyState === WebSocket.CONNECTING)) this.sendServerPacket(packet);
-        else this.sendLocalOnly(packet);
+        this.sendLocalOnly({ type: 'nightAdvance', eventId: `night_${this.roomCode}_${g.night}`, economy: { ...this.localEconomy } });
     },
 
     handleIncomingNetworkMessage(msg) {
         if (!msg || !msg.type) return;
         if (this.markAndCheckDuplicate(msg)) return;
         if (typeof msg.type === 'string' && msg.type.startsWith('fr_') && window.frNet) { try { window.frNet(msg); } catch (err) { console.warn('frNet', err); } return; }
-        if (msg.type === 'nightComplete' && window.game) {
-            if (msg.economy) {
-                this.localEconomy = { ...this.localEconomy, ...msg.economy, updatedAt: Date.now() };
-                window.game.applyLocalEconomy(msg.economy);
-            }
-            if (window.game.state === 'PLAYING' && window.game.balance >= window.game.target) window.game.completeNight(true);
-        } else if (msg.type === 'nightAdvance' && msg.economy && window.game) {
+        if (msg.type === 'nightAdvance' && msg.economy && window.game) {
             if (Number(msg.economy.night) > (window.game.night || 1)) {
                 this.localEconomy = { ...this.localEconomy, ...msg.economy, updatedAt: Date.now() };
                 window.game.applyNightAdvance(msg.economy);
@@ -433,7 +425,6 @@ window.mpSync = {
             this.localEconomy = { ...this.localEconomy, ...msg.economy, updatedAt: Date.now() };
             window.game.applyLocalEconomy(msg.economy);
         } else if (msg.type === 'localEconomyDelta' && window.game) {
-            if (this.hasAuthoritativeServer()) return;
             const d = Math.round(Number(msg.delta) || 0);
             this.localEconomy.balance = Math.max(0, Math.round(this.localEconomy.balance) + d);
             this.localEconomy.updatedAt = Date.now();
@@ -452,7 +443,6 @@ window.mpSync = {
             window.game.applyLocalEconomy({ ...this.localEconomy }, 'reset');
             this.sendLocalOnly({ type: 'localEconomySync', economy: { ...this.localEconomy } });
         } else if (msg.type === 'requestLocalEconomy' && window.game) {
-            if (this.hasAuthoritativeServer()) return;
             const snap = {
                 night: window.game.night,
                 unlockedFloors: window.game.unlockedFloors,
@@ -500,38 +490,32 @@ window.mpSync = {
             this.socket = ws;
             ws.addEventListener('open', () => {
                 this.isHostAuthority = false;
-                this.networkUid = String(window.myUid || myUid);
-                ws.send(JSON.stringify({ type: 'join', room: this.roomCode, uid: this.networkUid, name: window.game?.playerName || 'PLAYER', floor: window.game?.currentFloor || 1 }));
-                this.serverJoined = true;
-                const queued = this.pendingSocketPackets.splice(0);
-                for (const packet of queued) {
-                    try { ws.send(JSON.stringify({ ...packet, uid: this.networkUid, room: this.roomCode })); } catch (_) {}
-                }
+                ws.send(JSON.stringify({ type: 'join', room: this.roomCode, uid: myUid, name: window.game?.playerName || 'PLAYER', floor: window.game?.currentFloor || 1 }));
                 if (window.game) window.game.showToast('🌐 Подключено к внешнему WebSocket-серверу!', 'green');
             });
             ws.addEventListener('message', (event) => {
                 let msg;
                 try { msg = JSON.parse(event.data); } catch (_) { return; }
                 if (!msg) return;
-                if (msg.type === 'joined') {
-                    this.serverJoined = true;
-                    const remote = {};
-                    for (const p of (msg.players || [])) if (p && p.uid && p.uid !== this.networkUid) remote[p.uid] = p;
-                    if (window.game && Object.keys(remote).length) window.game.syncRemotePlayers(remote);
-                    return;
+                // The server can assign a unique id if an old client version
+                // joins twice with the same Firebase uid. Apply it before the
+                // normal self-message filter is evaluated.
+                if (msg.type === 'joined' && msg.sessionUid) {
+                    myUid = String(msg.sessionUid);
+                    window.myUid = myUid;
+                    this.sessionUid = myUid;
                 }
-                if (msg.uid === (this.networkUid || window.myUid || myUid)) return;
+                const selfId = window.myUid || myUid;
+                if (msg.uid && String(msg.uid) === String(selfId)) return;
                 this.handleIncomingNetworkMessage(msg);
             });
             ws.addEventListener('close', () => {
-                this.serverJoined = false;
                 this.isHostAuthority = true;
                 if (this.socket === ws && window.game?.state === 'PLAYING') {
                     window.game.showToast('⚡ Внешний WSS отключён — это устройство стало сервером комнаты', 'amber');
                 }
             });
             ws.addEventListener('error', () => {
-                this.serverJoined = false;
                 this.isHostAuthority = true;
                 if (window.game) window.game.showToast('⚡ WSS недоступен — запущен локальный сервер на этом устройстве', 'amber');
             });
@@ -542,42 +526,24 @@ window.mpSync = {
     },
 
     sendPacket(packet) {
-        const activeUid = this.networkUid || window.myUid || myUid;
-        if (this.socket && this.socket.readyState === WebSocket.OPEN && this.serverJoined) {
+        const activeUid = window.myUid || myUid;
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             try { this.socket.send(JSON.stringify({ ...packet, uid: activeUid, room: this.roomCode })); } catch (_) {}
         }
     },
 
-    sendServerPacket(packet) {
-        const activeUid = this.networkUid || window.myUid || myUid;
-        const payload = { ...packet, uid: activeUid, room: this.roomCode };
-        if (this.socket && this.socket.readyState === WebSocket.OPEN && this.serverJoined) {
-            try { this.socket.send(JSON.stringify(payload)); return true; } catch (_) { return false; }
-        }
-        if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
-            this.pendingSocketPackets.push(payload);
-            if (this.pendingSocketPackets.length > 200) this.pendingSocketPackets.shift();
-            return true;
-        }
-        return false;
-    },
-
     sendWorldPacket(packet) {
-        const activeUid = this.networkUid || window.myUid || myUid;
+        const activeUid = window.myUid || myUid;
         const msg = { ...packet, uid: activeUid, room: this.roomCode };
-        // When a WebSocket server is configured, use it as the single room relay.
-        // Do not queue rapid snapshots while the join handshake is still running.
-        if (this.socket && this.socket.readyState === WebSocket.OPEN && this.serverJoined) {
-            this.sendServerPacket(packet);
-            return;
-        }
-        if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
-            if (packet.type === 'machineLiveState' || packet.type === 'state') return;
-            this.sendServerPacket(packet);
+        // Prefer exactly one transport per room. When WSS is connected, the
+        // server relays to all clients; local tab/PeerJS copies would duplicate
+        // grab/bet/result events and can start the same van sequence twice.
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.sendPacket(msg);
             return;
         }
         if (this.bc) { try { this.bc.postMessage(msg); } catch (_) {} }
-        this.connections.forEach(c => { if (c && c.open) { try { c.send(msg); } catch (_) {} } });
+        this.connections.forEach(c => { if (c.open) { try { c.send(msg); } catch (_) {} } });
     },
 
     sendLocalEconomyDelta(delta) {
@@ -585,12 +551,7 @@ window.mpSync = {
         if (!cleanDelta) return;
         this.localEconomy.balance = Math.max(0, Math.round(this.localEconomy.balance) + cleanDelta);
         this.localEconomy.updatedAt = Date.now();
-        const eventId = `econ_${this.networkUid || window.myUid || myUid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        if (this.hasAuthoritativeServer() || (this.socket && this.socket.readyState === WebSocket.CONNECTING)) {
-            this.sendServerPacket({ type: 'localEconomyDelta', delta: cleanDelta, eventId });
-        } else {
-            this.sendLocalOnly({ type: 'localEconomyDelta', delta: cleanDelta, economy: { ...this.localEconomy }, eventId });
-        }
+        this.sendLocalOnly({ type: 'localEconomyDelta', delta: cleanDelta, economy: { ...this.localEconomy } });
     },
 
     sendLocalEconomyReset(vipWatch = false) {
@@ -604,26 +565,16 @@ window.mpSync = {
             timeLeft: dur,
             updatedAt: Date.now()
         };
-        const packet = { type: 'localEconomyReset', vipWatch: !!vipWatch, economy: { ...this.localEconomy } };
-        if (this.hasAuthoritativeServer() || (this.socket && this.socket.readyState === WebSocket.CONNECTING)) this.sendServerPacket(packet);
-        else this.sendLocalOnly(packet);
+        this.sendLocalOnly({ type: 'localEconomyReset', vipWatch: !!vipWatch, economy: { ...this.localEconomy } });
     },
 
     sendChatMessage(sender, text) {
-        const clean = String(text || '').trim().slice(0, 140);
-        if (!clean) return;
-        const eventId = `chat_${this.networkUid || window.myUid || myUid}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-        const packet = { type: 'chat', sender, text: clean, eventId };
-        if (this.hasAuthoritativeServer() || (this.socket && this.socket.readyState === WebSocket.CONNECTING)) {
-            this.sendServerPacket(packet);
-        } else {
-            this.sendWorldPacket(packet);
-        }
+        this.sendWorldPacket({ type: 'chat', sender, text });
     },
 
     sendMachineAction(machineId, actionIndex, seed) {
         if (this.applyingRemoteAction) return;
-        this.sendWorldPacket({ type: 'machineAction', machineId, actionIndex, seed, eventId: `ma_${this.networkUid || window.myUid || myUid}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` });
+        this.sendWorldPacket({ type: 'machineAction', machineId, actionIndex, seed });
     },
 
     sendMachineLiveState(machineId, floor, snapshot, force = false) {
@@ -773,25 +724,16 @@ window.mpSync = {
             ragdoll: state.ragdoll || null,
             batEvent: state.batEvent || null,
             look: window.myLook || null,
-            // Keep presence/activity authoritative while the player is in TCC/escape scenes.
-            mode: String(state.mode || window.friendActivityMode || 'casino'),
-            activityId: state.activityId == null ? null : String(state.activityId),
             updatedAt: now
         };
-        const selfId = this.networkUid || window.myUid || myUid;
-        if (this.socket && this.socket.readyState === WebSocket.OPEN && this.serverJoined) {
-            this.sendServerPacket({ type: 'state', state: payload });
-        } else if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
-            // The next regular tick sends a fresh state after the join handshake.
-            return;
-        } else {
-            if (this.bc) {
-                try { this.bc.postMessage({ type: 'state', uid: selfId, state: payload }); } catch (_) {}
-            }
-            if (this.connections.length > 0) {
-                const pkt = { type: 'state', uid: selfId, state: payload };
-                this.connections.forEach(c => { if (c.open) { try { c.send(pkt); } catch (_) {} } });
-            }
+        const selfId = window.myUid || myUid;
+        if (this.bc) {
+            try { this.bc.postMessage({ type: 'state', uid: selfId, state: payload }); } catch (_) {}
+        }
+        this.sendPacket({ type: 'state', state: payload });
+        if (this.connections.length > 0) {
+            const pkt = { type: 'state', uid: selfId, state: payload };
+            this.connections.forEach(c => { if (c.open) { try { c.send(pkt); } catch (_) {} } });
         }
         if (!db) return;
         const myDocRef = doc(db, 'artifacts', appId, 'public', 'data', `room_${this.roomCode}_players`, myUid);
@@ -1485,7 +1427,7 @@ class Casino3DGame {
             add(new THREE.TorusGeometry(0.6, 0.04, 8, 28), gold, 0, Y + 0.25, 0.1, Math.PI / 2 + 0.35, 0, 0);
             add(new THREE.SphereGeometry(0.05, 8, 8), glow(0xffffff), 0.35, Y + 0.34, 0.2); spin(w, 'y', 2.2);
         } else if (type === 'crash') {
-            const r = new THREE.Group(); group.add(r); r.position.set(0, Y + 0.1, 0); r.rotation.z = -0.25;
+            const r = new THREE.Group(); r.userData.casinoRocketDecor = true; group.add(r); r.position.set(0, Y + 0.1, 0); r.rotation.z = -0.25;
             const part = (geo, mat, x, yy, z, rz = 0) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, yy, z); m.rotation.z = rz; r.add(m); };
             part(new THREE.CylinderGeometry(0.14, 0.14, 0.7, 14), white, 0, 0.3, 0); part(new THREE.ConeGeometry(0.14, 0.3, 14), S(0xdc2626), 0, 0.8, 0);
             part(new THREE.BoxGeometry(0.35, 0.18, 0.04), S(0xdc2626), 0, 0.02, 0); part(new THREE.ConeGeometry(0.09, 0.3, 10), glow(0xfb923c), 0, -0.2, 0, Math.PI);
@@ -1987,9 +1929,7 @@ class Casino3DGame {
         document.getElementById('overlayScreen').classList.add('hidden');
         if (window.mpSync && typeof window.mpSync.joinRoom === 'function') {
             window.mpSync.joinRoom(this.roomCode);
-            // A configured WSS room owns its existing economy. Do not reset every
-            // connected player's night just because this browser's socket is still connecting.
-            if (!window.mpSync.socketUrl) {
+            if (!window.mpSync.hasAuthoritativeServer()) {
                 window.mpSync.sendLocalEconomyReset(false);
             }
         }
@@ -2038,7 +1978,7 @@ class Casino3DGame {
             this.closeMobileChat();
         } else if (this.state === 'PLAYING' && !this.activeModal) {
             inp.blur();
-            try { input.lockPointer(); } catch (_) {}
+            input.lockPointer();
         }
     }
 
@@ -2130,19 +2070,19 @@ class Casino3DGame {
             { id: 'elevator', type: 'elevator', x: -7.5, z: -7.0, ry: 0, color: '#3b82f6', hexColor: 0x3b82f6, icon: '🛗', name: this.lang === 'ru' ? 'Лифт казино' : 'Casino Elevator', subtitle: this.lang === 'ru' ? `Открыто этажей: ${this.unlockedFloors} (∞)` : `Unlocked floors: ${this.unlockedFloors} (∞)` },
             { id: 'dealer_npc', type: 'dealer', x: 7.5, z: -8.2, ry: 0, color: '#10b981', hexColor: 0x10b981, icon: '🕵️‍♂️', name: this.lang === 'ru' ? 'Ростовщик «Шрам»' : 'Loan Shark', subtitle: this.lang === 'ru' ? 'Чёрный рынок талисманов' : 'Black market talismans' }
         ];
-        const rng = mulberry32(hashSeed(`${this.roomCode}|floor${floor}|night${this.night}|6m`));
+        const rng = mulberry32(hashSeed(`${this.roomCode}|floor${floor}|6machines`));
         const shuffled = [...ALL_GAMES_POOL];
         for (let i = shuffled.length - 1; i > 0; i--) {
             const j = Math.floor(rng() * (i + 1));
             [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
         }
         const positions = [
-            { x: -6.5, z: -3.8, ry: 0.2 },
-            { x: 0.0,  z: -4.4, ry: 0.0 },
-            { x: 6.5,  z: -3.8, ry: -0.2 },
-            { x: -6.5, z: 1.5,  ry: 0.35 },
-            { x: 0.0,  z: 1.9,  ry: 0.0 },
-            { x: 6.5,  z: 1.5,  ry: -0.35 }
+            { x: -6.5, z: -3.6, ry: 0.2 },
+            { x: 0.0,  z: -4.2, ry: 0.0 },
+            { x: 6.5,  z: -3.6, ry: -0.2 },
+            { x: -6.5, z: 1.4,  ry: 0.35 },
+            { x: 0.0,  z: 1.8,  ry: 0.0 },
+            { x: 6.5,  z: 1.4,  ry: -0.35 }
         ];
         const placed = positions.map((pos, idx) => {
             const machine = shuffled[idx % shuffled.length];
@@ -2451,7 +2391,7 @@ class Casino3DGame {
         let amount = Math.round(Number(delta) || 0);
         if (this.state === 'PLAYING' && amount >= Math.max(500, (this.target || 0) * 0.02)) this.winFx(amount);
         this.balance = Math.max(0, this.balance + amount);
-        if (window.mpSync && typeof window.mpSync.sendLocalEconomyDelta === 'function' && amount !== 0 && !window.mpSync.applyingRemoteAction) {
+        if (window.mpSync && typeof window.mpSync.sendLocalEconomyDelta === 'function' && amount !== 0) {
             window.mpSync.sendLocalEconomyDelta(amount);
         }
         this.updateHUD();
@@ -2547,9 +2487,8 @@ class Casino3DGame {
         this.completeNight();
     }
 
-    completeNight(fromNetwork = false) {
+    completeNight() {
         if (this.state !== 'PLAYING') return;
-        if (!fromNetwork && window.mpSync && typeof window.mpSync.sendNightComplete === 'function') window.mpSync.sendNightComplete(this);
         sound.bigWin();
         this.state = 'NIGHT_END';
         input.unlockPointer();
@@ -4484,11 +4423,6 @@ function buildVan() {
 function startTcc(f) {
     const g = G(); if (tcc) { setTimeout(() => startTcc(f), 3000); return; }
     f.state = 'taken'; sound.lose();
-    if (f.me) {
-        window.friendActivityMode = 'tcc';
-        sendPkt({ type: 'fr_status', targetUid: f.uid, status: 'tcc', activityId: f.eid || null, floor: g.currentFloor });
-        if (window.mpSync) window.mpSync.pushMyState({ name: g.playerName, x: g.player.x, y: 0, z: g.player.z, yaw: window.input.yaw, floor: g.currentFloor, hasBat: g.hasBat, mode: 'tcc', activityId: f.eid || null });
-    }
     toast('🚐 ПРОИГРЫШ! Приехал зелёный фургон ТЦК...', 'red');
     const van = buildVan(); van.position.set(-17, 0, -1); g.scene.add(van);
     const guys = [0, 1].map(() => { const rig = g.createGoofyCharacterMesh(0x3f6212, 0xa3b18a, 0x14532d); rig.root.visible = false; g.scene.add(rig.root); return { rig, ph: 0 }; });
@@ -4565,12 +4499,7 @@ function startEscape(f) {
     document.body.appendChild(hud);
     g.state = 'ESCAPE'; g.closeModal && g.closeModal(false); window.input.lockPointer && window.input.lockPointer();
     window.input.yaw = 0; window.input.pitch = 0;
-    window.friendActivityMode = 'escape';
-    esc = { f, OX, grp, solids, lamp, chRig, hud, goalZ, goalTop: top, x: 0, y: 0, z: 1, vy: 0, onG: true, t: 0, chZ: 9, last: performance.now(), ph: 0, lastStatePush: 0 };
-    if (f.real) {
-        sendPkt({ type: 'fr_status', targetUid: f.uid, status: 'escape', activityId: f.eid || null, floor: g.currentFloor });
-        if (window.mpSync) window.mpSync.pushMyState({ name: g.playerName, x: g.player.x, y: 0, z: g.player.z, yaw: window.input.yaw, floor: g.currentFloor, hasBat: g.hasBat, mode: 'escape', activityId: f.eid || null });
-    }
+    esc = { f, OX, grp, solids, lamp, chRig, hud, goalZ, goalTop: top, x: 0, y: 0, z: 1, vy: 0, onG: true, t: 0, chZ: 9, last: performance.now(), ph: 0 };
     toast('🏃 ПОБЕГ ИЗ ФУРГОНА! W — бег, Пробел — прыжок. Беги к зелёному столбу!', 'red');
     requestAnimationFrame(escLoop);
 }
@@ -4578,21 +4507,17 @@ function startEscape(f) {
 function endEscape(win, why) {
     const g = G(), e = esc; if (!e) return; esc = null; e.f.state = 'idle';
     g.scene.remove(e.grp); g.scene.remove(e.lamp); e.hud.remove();
-    if (e.f.real) {
-        window.friendActivityMode = win ? 'casino' : 'taken';
-        sendPkt({ type: 'fr_escape', targetUid: e.f.uid, ok: !!win, floor: g.currentFloor, activityId: e.f.eid || null });
-        if (window.mpSync) window.mpSync.pushMyState({ name: g.playerName, x: g.player.x, y: 0, z: g.player.z, yaw: window.input.yaw, floor: g.currentFloor, hasBat: g.hasBat, mode: window.friendActivityMode, activityId: e.f.eid || null });
-    }
     if (win) {
         g.state = 'PLAYING'; g.resetPlayerPosition();
         g.camera.position.set(g.player.x, g.player.y, g.player.z); window.input.yaw = 0;
         const f = e.f;
         if (f.real) {
             const a = avatars()[f.holderUid]; if (a) { g.player.x = a.position.x + 1.2; g.player.z = a.position.z + 0.5; }
-            f.rig.root.visible = false; sound.bigWin(); toast('🏁 Ты сбежал от ТЦК и вернулся в игру!', 'green');
+            sendPkt({ type: 'fr_escape', targetUid: f.uid, ok: true }); f.rig.root.visible = false; sound.bigWin(); toast('🏁 Ты сбежал от ТЦК и вернулся в игру!', 'green');
         }
     } else {
         const f = e.f; g.scene.remove(f.rig.root);
+        if (f.real) sendPkt({ type: 'fr_escape', targetUid: f.uid, ok: false });
         g.changeBalance(-g.balance); g.state = 'PLAYING';
         g.triggerGameOver(why);
         const p = document.querySelector('#overlayCard p'); if (p) p.textContent = why;
@@ -4620,20 +4545,7 @@ function escLoop(now) {
     const speed = Math.min(6.6, 5.0 + e.t * 0.08); e.chZ -= speed * dt;
     const ch = e.chRig.root, cs = Math.sin(e.t * 13); ch.position.set(ch.position.x + (e.x - ch.position.x) * Math.min(1, dt * 3), ch.position.y + (e.y - ch.position.y) * Math.min(1, dt * 6), e.chZ); ch.rotation.y = Math.PI;
     e.chRig.legL.rotation.x = cs * 0.9; e.chRig.legR.rotation.x = -cs * 0.9; e.chRig.armL.rotation.x = -cs * 0.8; e.chRig.armR.rotation.x = cs * 0.8;
-    if (e.f.real) {
-        e.pt = (e.pt || 0) - dt;
-        if (e.pt <= 0) {
-            e.pt = 0.25;
-            const left = Math.max(0, Math.round(e.z - e.goalZ));
-            const gap = +Math.max(0, e.z - e.chZ).toFixed(1);
-            sendPkt({ type: 'fr_prog', targetUid: e.f.uid, left, gap, x: +e.x.toFixed(2), y: +e.y.toFixed(2), z: +e.z.toFixed(2), chZ: +e.chZ.toFixed(2), activityId: e.f.eid || null, floor: g.currentFloor });
-            // update() returns early in ESCAPE mode, so send our normal presence heartbeat here.
-            if (window.mpSync && now - (e.lastStatePush || 0) > 0.22) {
-                e.lastStatePush = now;
-                window.mpSync.pushMyState({ name: g.playerName, x: g.player.x, y: 0, z: g.player.z, yaw: input.yaw, floor: g.currentFloor, hasBat: g.hasBat, mode: 'escape', activityId: e.f.eid || null });
-            }
-        }
-    }
+    if (e.f.real) { e.pt = (e.pt || 0) - dt; if (e.pt <= 0) { e.pt = 0.25; sendPkt({ type: 'fr_prog', targetUid: e.f.uid, left: Math.max(0, Math.round(e.z - e.goalZ)), gap: +Math.max(0, e.z - e.chZ).toFixed(1) }); } }
     e.hud.textContent = `🚐 ПОБЕГ! До выхода: ${Math.max(0, Math.round(e.z - e.goalZ))} м · ТЦК позади: ${Math.max(0, (e.z - e.chZ)).toFixed(1)} м`;
     if (e.y < -9) return endEscape(false, 'Ты сорвался с крыши, а друга увезли в ТЦК. Все деньги конфискованы. Вы проиграли.');
     if (e.chZ <= e.z + 1.0) return endEscape(false, 'Тебя догнал ТЦК. Все деньги конфискованы. Вы проиграли.');
@@ -4678,12 +4590,21 @@ function faceTex(f, w, h, bg) {
 function cardProp(f) {
     const c = document.createElement('canvas'); c.width = 256; c.height = 360; const x = c.getContext('2d');
     x.fillStyle = '#f8fafc'; x.beginPath(); x.roundRect(4, 4, 248, 352, 22); x.fill(); x.strokeStyle = '#cbd5e1'; x.lineWidth = 4; x.stroke();
-    x.fillStyle = '#dc2626'; x.textAlign = 'left'; x.font = '900 44px Inter,Arial'; x.fillText('K', 22, 58); x.font = '40px sans-serif'; x.fillText('♥', 22, 100);
-    x.save(); x.translate(256, 360); x.rotate(Math.PI); x.font = '900 44px Inter,Arial'; x.fillText('K', 22, 58); x.font = '40px sans-serif'; x.fillText('♥', 22, 100); x.restore();
-    x.fillStyle = '#fde68a'; x.beginPath(); x.roundRect(58, 80, 140, 200, 30); x.fill(); window.drawFace(x, 128, 185, 52, f.look);
-    x.fillStyle = '#111'; x.textAlign = 'center'; x.font = '800 22px Inter,Arial'; x.fillText(String(f.name).slice(0, 12), 128, 318);
+    // Вместо мастей — маленькие портреты игрока в углах карты.
+    const miniFace = (cx, cy, r, flip = false) => {
+        x.save(); x.translate(cx, cy); if (flip) x.rotate(Math.PI);
+        x.beginPath(); x.arc(0, 0, r, 0, Math.PI * 2); x.fillStyle = '#fde68a'; x.fill();
+        x.save(); x.beginPath(); x.arc(0, 0, r - 2, 0, Math.PI * 2); x.clip();
+        window.drawFace(x, 0, 0, r * 0.88, f.look); x.restore();
+        x.strokeStyle = '#d6ad55'; x.lineWidth = 3; x.beginPath(); x.arc(0, 0, r, 0, Math.PI * 2); x.stroke(); x.restore();
+    };
+    miniFace(42, 48, 23); miniFace(214, 312, 23, true);
+    x.fillStyle = '#fde68a'; x.beginPath(); x.roundRect(40, 78, 176, 200, 30); x.fill();
+    miniFace(128, 164, 72);
+    x.fillStyle = '#111827'; x.textAlign = 'center'; x.font = '900 20px Inter,Arial'; x.fillText(String(f.name).slice(0, 14), 128, 316);
+    x.fillStyle = '#64748b'; x.font = '700 11px Inter,Arial'; x.fillText('PLAYER EDITION', 128, 338);
     const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.62, 0.87), new THREE.MeshBasicMaterial({ map: t, side: THREE.DoubleSide }));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 1.0), new THREE.MeshBasicMaterial({ map: t, side: THREE.DoubleSide }));
     const g = new THREE.Group(); g.add(m); G().scene.add(g); return g;
 }
 function rocketProp(f) {
@@ -4754,20 +4675,46 @@ function dropReal() {
     sendPkt({ type: 'fr_drop', targetUid: uid, x, z }); endCarryVisual(uid); toast('Ты поставил друга на пол');
 }
 function throwReal() {
-    const g = G(), uid = real.holding, d = fwd(window.input.yaw); real.holding = null;
-    const from = { x: g.player.x + d.x, z: g.player.z + d.z }; let end = { x: from.x, z: from.z }, mach = null;
+    const g = G(), uid = real.holding, d = fwd(window.input.yaw);
+    if (!uid) return;
+    const from = { x: g.player.x + d.x, z: g.player.z + d.z };
+    let mach = null;
     for (let k = 0.5; k <= 9; k += 0.3) {
         const px = from.x + d.x * k, pz = from.z + d.z * k;
         if (Math.abs(px) > 10.2 || Math.abs(pz) > 8.2) break;
         mach = g.sceneObjects.find((o) => MACH.includes(o.type) && Math.hypot(px - o.x, pz - o.z) < 1.3);
-        if (mach) { end = { x: mach.x - d.x * 1.5, z: mach.z - d.z * 1.5 }; break; }
+        if (mach) break;
         if (g.checkCollision3D(px, pz)) break;
-        end = { x: px, z: pz };
+        mach = null;
     }
-    const eid = `${Date.now()}_fr_${Math.random().toString(36).slice(2, 6)}`, dist = Math.hypot(end.x - from.x, end.z - from.z);
-    const data = { eventId: eid, targetUid: uid, floor: g.currentFloor, startX: +from.x.toFixed(2), startY: 1.0, startZ: +from.z.toFixed(2), endX: +end.x.toFixed(2), endY: 0.5, endZ: +end.z.toFixed(2), vx: +(d.x * 11).toFixed(2), vz: +(d.z * 11).toFixed(2), vy: 5.2, duration: Math.min(2.2, 1.2 + dist * 0.12), fallSummary: 'friend throw' };
-    endCarryVisual(uid); sendPkt({ type: 'playerRagdoll', ...data }); g.startRemoteAvatarRagdoll(uid, data); sound.penguinBounce();
-    if (mach) { sendPkt({ type: 'fr_bet', targetUid: uid, machineId: mach.id, eid, eventId: `fr_bet_${eid}` }); startBetReal({ uid: myId(), targetUid: uid, machineId: mach.id, eid }); toast(`🎰 ${nameOf(uid)} брошен в автомат! Ждём результат...`); }
+
+    real.holding = null;
+    endCarryVisual(uid);
+    const eid = `${Date.now()}_fr_${Math.random().toString(36).slice(2, 6)}`;
+    if (mach) {
+        // Компактная серверная команда: кто -> в какой автомат. Координаты
+        // броска и физика больше не пересылаются по сети.
+        const packet = { type: 'fr_place', targetUid: uid, machineId: mach.id, floor: g.currentFloor, eid };
+        sendPkt(packet);
+        startBetReal({ uid: myId(), targetUid: uid, machineId: mach.id, floor: g.currentFloor, eid });
+        sound.penguinBounce();
+        toast(`🎰 ${nameOf(uid)} отправлен в автомат «${mach.type}»!`);
+        return;
+    }
+
+    // Если промахнулись мимо автомата, оставляем обычный короткий бросок на пол.
+    const endX = Math.max(-10.2, Math.min(10.2, from.x + d.x * 2.4));
+    const endZ = Math.max(-8.2, Math.min(8.2, from.z + d.z * 2.4));
+    const data = {
+        eventId: eid, targetUid: uid, floor: g.currentFloor,
+        startX: +from.x.toFixed(2), startY: 1.0, startZ: +from.z.toFixed(2),
+        endX: +endX.toFixed(2), endY: 0.5, endZ: +endZ.toFixed(2),
+        vx: +(d.x * 8).toFixed(2), vz: +(d.z * 8).toFixed(2), vy: 4.2,
+        duration: 0.9, fallSummary: 'friend toss'
+    };
+    sendPkt({ type: 'playerRagdoll', ...data });
+    g.startRemoteAvatarRagdoll(uid, data);
+    sound.penguinBounce();
 }
 
 function banner(text) {
@@ -4776,20 +4723,39 @@ function banner(text) {
     if (!b) { b = document.createElement('div'); b.id = 'frBanner'; b.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:80;font:800 15px Inter,sans-serif;color:#fff;background:rgba(126,34,206,.9);padding:9px 18px;border-radius:12px;text-align:center;pointer-events:none;max-width:90vw'; document.body.appendChild(b); }
     b.textContent = text;
 }
-function startBetReal(m) {
-    const g = G(), o = g.sceneObjects.find((x) => x.id === m.machineId); if (!o) return;
-    const f = proxyFor(String(m.targetUid)); f.name = nameOf(f.uid); f.holderUid = String(m.uid); f.machine = o; f.eid = m.eid;
+function startBetReal(m, retry = 0) {
+    const g = G();
+    const targetUid = String(m.targetUid || '');
+    if (!targetUid) return null;
+    const existing = real.bets.find((b) => b.uid === targetUid && b.eid && b.eid === m.eid && !b.resolved);
+    if (existing) return existing;
+    const o = (g.sceneObjects || []).find((x) => x.id === m.machineId);
+    if (!o) {
+        // A remote browser can receive fr_bet while its new floor is still
+        // rebuilding. Retry briefly instead of silently discarding the event.
+        if (retry < 24) setTimeout(() => startBetReal(m, retry + 1), 150);
+        else toast(`Не найден автомат ${m.machineId || ''} для сетевой ставки`, 'red');
+        return null;
+    }
+    const f = proxyFor(targetUid); f.name = nameOf(f.uid); f.holderUid = String(m.uid); f.machine = o; f.eid = m.eid;
     f.state = 'ride'; f.t0 = performance.now() / 1000 + 1.0; f.shown = false; f.resolved = false; f.staked = 0; f.paid = 0; f.started = false;
     if (!real.bets.includes(f)) real.bets.push(f);
     banner(f.holderUid === myId() ? `🎰 ${f.name} на кону! Выиграй раунд на этом автомате (≥1x), иначе приедет ТЦК` : (f.me ? '🎰 Тебя поставили на автомат! Всё зависит от друга...' : `🎰 ${f.name} на кону — ждём результат раунда`));
+    return f;
 }
 function cancelBet(f, why) {
-    real.bets = real.bets.filter((b) => b !== f); banner(null); dropProp(f); restoreRig(f); f.rig.root.visible = false; f.resolved = true;
+    real.bets = real.bets.filter((b) => b !== f); banner(null); dropProp(f);
+    const rocketDecor = f.machine && f.machine.group && f.machine.group.children.find((child) => child.userData && child.userData.casinoRocketDecor);
+    if (rocketDecor) rocketDecor.visible = true;
+    restoreRig(f); f.rig.root.visible = false; f.resolved = true;
     hideAvatar(f.uid, false); if (f.me) lockMe(false); toast(why, 'amber');
 }
 function onResult(f, win) {
     const g = G(), o = f.machine; if (f.resolved) return; f.resolved = true; banner(null);
-    real.bets = real.bets.filter((b) => b !== f); dropProp(f); restoreRig(f); f.rig.root.visible = true;
+    real.bets = real.bets.filter((b) => b !== f); dropProp(f);
+    const rocketDecor = o && o.group && o.group.children.find((child) => child.userData && child.userData.casinoRocketDecor);
+    if (rocketDecor) rocketDecor.visible = true;
+    restoreRig(f); f.rig.root.visible = true;
     if (win) resolveWinReal(f);
     else { f.state = 'taken'; const d = V3(g.player.x - o.x, 0, g.player.z - o.z).normalize(); f.rig.root.position.set(o.x + d.x * 1.6, 0, o.z + d.z * 1.6); startTcc(f); }
 }
@@ -4803,49 +4769,170 @@ window.friendRound = function (mid, d, isLoss) {
     clearTimeout(x.evalT);
     x.evalT = setTimeout(() => {
         const win = x.paid >= x.staked;
-        sendPkt({ type: 'fr_result', targetUid: f.uid, win, eid: f.eid || null, eventId: `fr_result_${f.eid || Date.now()}` }); onResult(f, win);
+        sendPkt({ type: 'fr_result', targetUid: f.uid, win }); onResult(f, win);
     }, 150);
 };
 
 function ridePose(f, o, t, now) {
-    const g = o.group, r = f.rig.root; g.updateMatrixWorld();
-    if (o.type === 'crash' || o.type === 'hilo' || o.type === 'blackjack') {
-        r.visible = false; const bobP = Math.sin(now * 5) * 0.05;
-        if (!f.prop) f.prop = o.type === 'crash' ? rocketProp(f) : cardProp(f);
-        const pp = g.localToWorld(V3(0, o.type === 'crash' ? 3.55 + bobP : 3.2 + bobP * 0.5, o.type === 'crash' ? 0.05 : 0.14));
-        f.prop.position.copy(pp); f.prop.rotation.set(0, g.rotation.y + (o.type === 'crash' ? 0 : Math.sin(now * 2) * 0.35), o.type === 'crash' ? -0.2 + Math.sin(now * 3) * 0.05 : 0);
-        if (f.prop.userData.flame) f.prop.userData.flame.scale.y = 0.8 + Math.random() * 0.6;
+    const g = o.group, r = f.rig.root;
+    g.updateMatrixWorld(true);
+    const W = (x, y, z) => g.localToWorld(V3(x, y, z));
+    const T = o.type, bob = Math.sin(now * 5) * 0.05, rg = f.rig;
+    if (f.prop) dropProp(f);
+    r.visible = true;
+    r.children.forEach((c) => { c.visible = true; });
+    r.scale.setScalar(0.38);
+    r.rotation.set(0, g.rotation.y, 0);
+
+    // Каждая игра показывает друга своим способом.
+    if (T === 'crash') {
+        // Полноценное тело игрока заменяет декоративную ракету в модели автомата.
+        const rocketDecor = g.children.find((child) => child.userData && child.userData.casinoRocketDecor);
+        if (rocketDecor) rocketDecor.visible = false;
+        r.scale.setScalar(0.43);
+        r.position.copy(W(0, 3.15 + bob, 0.05));
+        r.rotation.set(0, g.rotation.y, -0.28 + Math.sin(now * 3) * 0.04);
+        rg.legL.rotation.x = rg.legR.rotation.x = -1.15;
+        rg.armL.rotation.set(-2.2, 0, 0.45);
+        rg.armR.rotation.set(-2.2, 0, -0.45);
         return;
     }
-    r.visible = true; if (f.prop) dropProp(f);
-    const W = (x, y, z) => g.localToWorld(V3(x, y, z)), T = o.type, bob = Math.sin(now * 5) * 0.05;
-    r.rotation.set(0, g.rotation.y, 0); r.scale.setScalar(0.4); g.updateMatrixWorld();
-    const rg = f.rig;
-    if (T === 'plinko') {
-        r.children.forEach((c) => { c.visible = c === rg.headGroup; }); r.scale.setScalar(0.85);
-        const by = 3.35 - ((t * 0.8) % 1) * 1.05, p = W(Math.sin(t * 8) * 0.75, by, 0.0); r.position.set(p.x, p.y - 1.56 * 0.85, p.z); r.rotation.z = t * 6; return;
+    if (T === 'blackjack' || T === 'hilo') {
+        // На картах крупный портрет друга вместо мастей и символов.
+        r.visible = false;
+        if (!f.prop) f.prop = cardProp(f);
+        const pp = W(0, 3.15 + bob * 0.4, 0.18);
+        f.prop.position.copy(pp);
+        f.prop.rotation.set(0, g.rotation.y + Math.sin(now * 2) * 0.12, 0);
+        return;
     }
-    let p;
-    if (T === 'crash') { p = W(0, 3.35 + bob, 0.05); r.rotation.z = -0.25; rg.legL.rotation.x = rg.legR.rotation.x = -1.25; rg.armL.rotation.set(-2.6, 0, 0.5); rg.armR.rotation.set(-2.6, 0, -0.5); }
-    else if (T === 'hilo' || T === 'blackjack') { p = W(0, 3.1 + bob * 0.5, 0.06); r.rotation.x = -Math.PI / 2; rg.armL.rotation.set(0, 0, 1.1); rg.armR.rotation.set(0, 0, -1.1); }
-    else { p = W(0, 2.9 + Math.abs(bob), 0); r.rotation.y += now * 1.5; rg.armL.rotation.set(-2.8, 0, 0.4 + Math.sin(now * 9) * 0.3); rg.armR.rotation.set(-2.8, 0, -0.4 - Math.sin(now * 9) * 0.3); }
-    r.position.set(p.x, p.y, p.z);
+    if (T === 'plinko') {
+        // Голова игрока — шарик Plinko.
+        r.children.forEach((c) => { c.visible = c === rg.headGroup; });
+        r.scale.setScalar(0.86);
+        const by = 3.35 - ((t * 0.8) % 1) * 1.05;
+        const p = W(Math.sin(t * 8) * 0.75, by, 0.0);
+        r.position.set(p.x, p.y - 1.56 * 0.86, p.z);
+        r.rotation.set(0, g.rotation.y, t * 6);
+        return;
+    }
+    if (T === 'wheel') {
+        // Друг лежит на ободе и вращается вместе с колесом.
+        const a = now * 1.4 + t * 1.8;
+        const px = Math.cos(a) * 0.53, py = 3.30 + Math.sin(a) * 0.53;
+        r.scale.setScalar(0.34);
+        r.position.copy(W(px + Math.sin(a) * 0.65, py - Math.cos(a) * 0.65, 0.24));
+        r.rotation.set(0, g.rotation.y, a);
+        rg.armL.rotation.x = rg.armR.rotation.x = -0.65;
+        return;
+    }
+    if (T === 'roulette') {
+        // Игрок крутится как фишка по краю рулетки.
+        const a = now * 2.2 + t * 2.4;
+        const p = W(Math.cos(a) * 0.48, 3.02, 0.12 + Math.sin(a) * 0.12);
+        r.scale.setScalar(0.32);
+        r.position.copy(p);
+        r.rotation.set(Math.PI / 2, g.rotation.y, a);
+        return;
+    }
+    if (T === 'slots') {
+        // Мини-игрок подпрыгивает в окошке слотов как выигрышный символ.
+        r.scale.setScalar(0.36);
+        r.position.copy(W(0, 2.95 + Math.abs(Math.sin(now * 7)) * 0.22, 0.24));
+        r.rotation.y = g.rotation.y + Math.sin(now * 4) * 0.35;
+        rg.armL.rotation.x = rg.armR.rotation.x = -1.1 - Math.sin(now * 7) * 0.25;
+        return;
+    }
+    if (T === 'dice') {
+        // Игрок сворачивается и перекатывается вместо кубика.
+        r.scale.setScalar(0.34);
+        r.position.copy(W(Math.sin(now * 5) * 0.3, 2.95 + Math.abs(Math.sin(now * 5)) * 0.14, 0.18));
+        r.rotation.set(now * 3.5, g.rotation.y + now * 1.5, now * 4.5);
+        return;
+    }
+    if (T === 'ducks') {
+        // Друг участвует в гонке как бегущий участник.
+        r.scale.setScalar(0.36);
+        r.position.copy(W(Math.sin(t * 5) * 0.55, 2.9 + bob, 0.15));
+        r.rotation.set(0, g.rotation.y, 0);
+        const run = Math.sin(now * 12);
+        rg.legL.rotation.x = run * 0.95; rg.legR.rotation.x = -run * 0.95;
+        rg.armL.rotation.x = -run * 0.55; rg.armR.rotation.x = run * 0.55;
+        return;
+    }
+    if (T === 'mines') {
+        // Голова друга становится движущейся миной.
+        r.children.forEach((c) => { c.visible = c === rg.headGroup || c === rg.torso; });
+        r.scale.setScalar(0.58);
+        r.position.copy(W(Math.sin(now * 3) * 0.35, 2.92 + Math.abs(Math.sin(now * 4)) * 0.12, 0.16));
+        r.rotation.z = Math.sin(now * 3) * 0.2;
+        return;
+    }
+    if (T === 'dragon') {
+        // Друг сидит верхом на драконьей башне.
+        r.scale.setScalar(0.36);
+        r.position.copy(W(0, 3.05 + bob, 0.36));
+        r.rotation.set(0.12, g.rotation.y, 0);
+        rg.legL.rotation.x = rg.legR.rotation.x = 0.9;
+        rg.armL.rotation.x = rg.armR.rotation.x = -1.2;
+        return;
+    }
+    if (T === 'coin') {
+        // Персонаж вращается ребром как монета.
+        r.scale.setScalar(0.42);
+        r.position.copy(W(0, 3.02 + Math.sin(now * 5) * 0.12, 0.16));
+        r.rotation.set(now * 4.8, g.rotation.y, Math.PI / 2);
+        return;
+    }
+    // Прочие автоматы: компактная фигурка на верхней панели.
+    r.scale.setScalar(0.36);
+    r.position.copy(W(0, 2.9 + Math.abs(bob), 0));
+    r.rotation.y = g.rotation.y + now * 1.5;
+    rg.armL.rotation.set(-2.8, 0, 0.4 + Math.sin(now * 9) * 0.3);
+    rg.armR.rotation.set(-2.8, 0, -0.4 - Math.sin(now * 9) * 0.3);
 }
 function realTick(dt, t) {
     const g = G(), input = window.input;
-    for (const uid of Object.keys(real.carryInfo)) if (t - (real.carryInfo[uid].t || 0) > 3 && real.carryInfo[uid].t) endCarryVisual(uid);
+    // Observers derive the carried player's position from the carrier's normal
+    // state packets. This removes a separate fr_carry packet every 80 ms.
+    for (const [uid, info] of Object.entries(real.carryInfo)) {
+        const carrier = (g.remotePlayers || {})[info.holder];
+        if (carrier && Number(carrier.floor || g.currentFloor) === Number(g.currentFloor)) {
+            const yaw = Number(carrier.yaw) || 0;
+            const cx = Number(carrier.x) - Math.sin(yaw) * 0.78;
+            const cz = Number(carrier.z) - Math.cos(yaw) * 0.78;
+            setPins(uid, cx, cz, yaw);
+            info.t = t;
+        } else if (t - (info.t || t) > 6) {
+            endCarryVisual(uid);
+        }
+    }
     if (real.holding) {
         if (!avatars()[real.holding]) real.holding = null;
         else {
-            { const d0 = fwd(input.yaw); startCarryVisual(real.holding); setPins(real.holding, g.player.x + d0.x, g.player.z + d0.z, input.yaw); } real.carryT -= dt; if (real.carryT <= 0) { real.carryT = 0.08; const d = fwd(input.yaw), rx = Math.cos(input.yaw), rz = -Math.sin(input.yaw); sendPkt({ type: 'fr_carry', targetUid: real.holding, x: +(g.player.x + d.x * 1.1 + rx * 0.5).toFixed(2), z: +(g.player.z + d.z * 1.1 + rz * 0.5).toFixed(2), yaw: input.yaw }); } }
+            const d0 = fwd(input.yaw);
+            startCarryVisual(real.holding);
+            setPins(real.holding, g.player.x + d0.x, g.player.z + d0.z, input.yaw);
+        }
     }
     const pm = real.proxies[myId()]; if (pm && pm.state === 'taken') lockMe(true);
     if (real.carried) {
-        lockMe(true); const c = real.carried;
-        g.player.x += (c.x - g.player.x) * Math.min(1, dt * 10); g.player.z += (c.z - g.player.z) * Math.min(1, dt * 10);
+        lockMe(true);
+        const c = real.carried;
+        const carrierState = (g.remotePlayers || {})[c.holder];
+        if (carrierState) {
+            const yaw = Number(carrierState.yaw) || 0;
+            c.x = Number(carrierState.x) - Math.sin(yaw) * 0.9;
+            c.z = Number(carrierState.z) - Math.cos(yaw) * 0.9;
+            c.lastUpdate = t;
+            g.player.x += (c.x - g.player.x) * Math.min(1, dt * 12);
+            g.player.z += (c.z - g.player.z) * Math.min(1, dt * 12);
+        } else if (t - Number(c.lastUpdate || c.startedAt || t) > 6) {
+            real.carried = null; lockMe(false);
+            toast('Связь с игроком, который нёс тебя, потеряна', 'amber');
+        }
     }
-    if (real.carried) { real.carriedGone = (avatars()[real.carried.holder] ? 0 : (real.carriedGone || 0) + dt); if (real.carriedGone > 4) { real.carried = null; real.carriedGone = 0; lockMe(false); toast('Тот, кто нёс тебя, отключился', 'amber'); } }
-    // Escape status is cleared by an explicit fr_escape or fr_disconnect from the server.
+    if (real.watch && t - real.watch.t > 15) { hideAvatar(real.watch.uid, false); real.watch = null; banner(null); toast('Друг пропал во время побега — игра продолжается', 'amber'); }
     for (const f of real.bets.slice()) {
         const absent = f.me ? !(g.remotePlayers || {})[f.holderUid] : !(g.remotePlayers || {})[f.uid];
         if (absent) { cancelBet(f, f.me ? 'Игрок, который тебя поставил, отключился — ставка отменена' : 'Друг отключился — ставка отменена'); continue; }
@@ -4857,7 +4944,7 @@ function realTick(dt, t) {
         }
         if (f.me) lockMe(true);
         ridePose(f, o, t - f.t0, t);
-        if (!f.resolved && f.holderUid === myId() && t > f.t0 + 90) { sendPkt({ type: 'fr_result', targetUid: f.uid, win: true, eid: f.eid || null, eventId: `fr_result_${f.eid || Date.now()}` }); onResult(f, true); }
+        if (!f.resolved && f.holderUid === myId() && t > f.t0 + 90) { sendPkt({ type: 'fr_result', targetUid: f.uid, win: true }); onResult(f, true); }
     }
 }
 function resolveWinReal(f) {
@@ -4876,30 +4963,37 @@ function failAll(why) {
 }
 window.frNet = function (m) {
     const g = G(), me = myId(), tgt = String(m.targetUid || '');
-    if (m.type === 'fr_status' && tgt && tgt !== me) {
-        const mode = String(m.status || 'casino');
-        if (mode === 'tcc' || mode === 'escape') {
-            real.watch = { uid: tgt, t: performance.now() / 1000, mode };
-            banner(mode === 'escape' ? `🏃 ${nameOf(tgt)} убегает от ТЦК!` : `🚐 ${nameOf(tgt)} забирает ТЦК...`);
-        } else if (real.watch && real.watch.uid === tgt) {
-            real.watch = null; banner(null);
+    if (m.type === 'fr_error') {
+        if (real.holding === tgt) { real.holding = null; endCarryVisual(tgt); }
+        toast(m.reason === 'target_busy' ? 'Игрок сейчас занят другим действием' : m.reason === 'target_already_held' ? 'Этого игрока уже несут' : 'Игрок больше не в комнате', 'amber');
+        return;
+    }
+    if (m.type === 'fr_grab' && tgt !== me) { real.carryInfo[tgt] = { holder: String(m.uid), t: performance.now() / 1000 }; startCarryVisual(tgt); }
+    if (m.type === 'fr_carry' && tgt !== me) { real.carryInfo[tgt] = { holder: String(m.uid), t: performance.now() / 1000, x: m.x, z: m.z }; startCarryVisual(tgt); setPins(tgt, m.x, m.z, m.yaw); }
+    if (m.type === 'fr_drop' && tgt !== me) endCarryVisual(tgt);
+    if (m.type === 'fr_grab' && tgt === me) {
+        const now = performance.now() / 1000;
+        real.carried = { holder: String(m.uid), x: g.player.x, z: g.player.z, startedAt: now, lastUpdate: now };
+        lockMe(true);
+        toast(`🤲 ${nameOf(m.uid)} взял тебя на руки!`);
+    }
+    else if (m.type === 'fr_carry' && tgt === me && real.carried) {
+        real.carried.x = Number(m.x) || real.carried.x;
+        real.carried.z = Number(m.z) || real.carried.z;
+        real.carried.lastUpdate = performance.now() / 1000;
+    }
+    else if (m.type === 'fr_drop' && tgt === me && real.carried) { real.carried = null; g.player.x = m.x; g.player.z = m.z; lockMe(false); toast('Тебя поставили на пол'); }
+    else if (m.type === 'fr_place' || m.type === 'fr_bet') startBetReal(m);
+    else if (m.type === 'fr_result') {
+        const f = real.proxies[tgt];
+        if (f) onResult(f, !!m.win);
+        else if (tgt === me) {
+            // Recreate the local target proxy if a very fast result arrived
+            // before the bet animation had finished initializing.
+            const pending = real.bets.find((b) => b.uid === tgt);
+            if (pending) onResult(pending, !!m.win);
         }
     }
-    if (m.type === 'fr_disconnect' && tgt) {
-        endCarryVisual(tgt);
-        if (real.holding === tgt) real.holding = null;
-        if (real.watch && real.watch.uid === tgt) { real.watch = null; banner(null); toast(`${nameOf(tgt)} отключился во время события`, 'amber'); }
-        const bet = real.bets.find((b) => b.uid === tgt || b.holderUid === tgt);
-        if (bet) cancelBet(bet, `${nameOf(tgt)} отключился — событие остановлено`);
-    }
-    if (m.type === 'fr_grab' && tgt !== me) { real.carryInfo[tgt] = { t: performance.now() / 1000 }; startCarryVisual(tgt); }
-    if (m.type === 'fr_carry' && tgt !== me) { real.carryInfo[tgt] = { t: performance.now() / 1000, x: m.x, z: m.z }; startCarryVisual(tgt); setPins(tgt, m.x - Math.cos(m.yaw) * 0.5, m.z + Math.sin(m.yaw) * 0.5, m.yaw); }
-    if (m.type === 'fr_drop' && tgt !== me) endCarryVisual(tgt);
-    if (m.type === 'fr_grab' && tgt === me) { real.carried = { holder: String(m.uid), x: g.player.x, z: g.player.z }; toast(`🤲 ${nameOf(m.uid)} взял тебя на руки!`); }
-    else if (m.type === 'fr_carry' && tgt === me && real.carried) { real.carried.x = m.x; real.carried.z = m.z; }
-    else if (m.type === 'fr_drop' && tgt === me && real.carried) { real.carried = null; g.player.x = m.x; g.player.z = m.z; lockMe(false); toast('Тебя поставили на пол'); }
-    else if (m.type === 'fr_bet') startBetReal(m);
-    else if (m.type === 'fr_result') { const f = real.proxies[tgt]; if (f) onResult(f, !!m.win); }
     else if (m.type === 'fr_prog' && tgt !== me) { real.watch = { uid: tgt, t: performance.now() / 1000 }; banner(`🏃 ${nameOf(tgt)} бежит от ТЦК! До выхода: ${m.left} м · ТЦК позади: ${m.gap} м`); }
     else if (m.type === 'fr_escape') {
         real.watch = null; banner(null);
@@ -4911,7 +5005,6 @@ window.frNet = function (m) {
 
 function abortAll() {
     const g = G();
-    window.friendActivityMode = 'casino';
     if (tcc) { g.scene.remove(tcc.van); tcc.guys.forEach((gy) => g.scene.remove(gy.rig.root)); tcc = null; }
     if (esc) { const e = esc; esc = null; g.scene.remove(e.grp); g.scene.remove(e.lamp); e.hud.remove(); if (g.state === 'ESCAPE') g.state = 'PLAYING'; }
     real.bets = []; real.carried = null; real.holding = null; real.watch = null;
